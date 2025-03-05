@@ -1,0 +1,27 @@
+{
+  "name": "coinmarketcap-bot",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "start": "node bot.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "crypto",
+    "telegram-bot",
+    "coinmarketcap"
+  ],
+  "author": "Your Name <your.email@example.com>",
+  "license": "ISC",
+  "description": "Telegram bot for tracking cryptocurrency prices using CoinMarketCap API",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "axios": "^1.8.1",
+    "crypto": "^1.0.1",
+    "dotenv": "^16.4.7",
+    "telegraf": "^4.16.3",
+    "ws": "^8.18.1"
+  }
+}
