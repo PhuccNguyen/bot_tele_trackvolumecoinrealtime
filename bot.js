@@ -244,8 +244,6 @@ bot.command('tcapy', async (ctx) => {
     // Fetch current order book
     const depthResponse = await axios.get('https://api.mexc.com/api/v3/depth', {
       params: { symbol, limit: 5 },
-      // Uncomment and add your API key if required
-      // headers: { 'X-MEXC-APIKEY': MEXC_API_KEY }
     });
 
     const { bids, asks } = depthResponse.data;
@@ -345,7 +343,7 @@ message += `                              🔄 Recent Of $TCAPY Trading Activity
 
     message += `🟢 <b> Buy Orders (Bids)</b> \n`;
     timeFrames.forEach(({ label, data }) => {
-      message += `<b>- Last ${label}\n</b>`;
+      message += `<b>- ⌛ Last ${label}\n</b>`;
       message += `  Total Buy: $${formatNumber(data.totalBuyValue)}|`;
       message += ` Total Amount: ${formatNumber(data.totalBuyAmount)} TCAPY\n`;
     });
