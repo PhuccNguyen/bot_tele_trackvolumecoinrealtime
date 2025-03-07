@@ -336,14 +336,14 @@ message += `                              🔄 Recent Of $TCAPY Trading Activity
       { label: '1 Hour', data: oneHourData },
     ];
     timeFrames.forEach(({ label, data }) => {
-      message += `<b>- Last ${label}</b>\n`;
+      message += `<b>⌛- Last ${label}</b>\n`;
       message += `  Total Sell: $${formatNumber(data.totalSellValue)}|`;
       message += ` Total Amount: ${formatNumber(data.totalSellAmount)} TCAPY\n`;
     });
 
     message += `🟢 <b> Buy Orders (Bids)</b> \n`;
     timeFrames.forEach(({ label, data }) => {
-      message += `<b>- ⌛ Last ${label}\n</b>`;
+      message += `<b>-⌛Last ${label}\n</b>`;
       message += `  Total Buy: $${formatNumber(data.totalBuyValue)}|`;
       message += ` Total Amount: ${formatNumber(data.totalBuyAmount)} TCAPY\n`;
     });
@@ -364,7 +364,7 @@ message += `                              🔄 Recent Of $TCAPY Trading Activity
     });
 
     message += `\n🔗 [View on MEXC](https://www.mexc.com/exchange/TCAPY_USDT)\n`;
-    message += `<b>Data fetched at: ${new Date().toUTCString()}</b>`;
+    message += `<b>Data fetched at: ${new Date().toUTCString()} in London - UK</b>`;
 
     // Send the message to the Telegram group
     await bot.telegram.sendMessage(chatId, message, { parse_mode: 'HTML' });
