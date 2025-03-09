@@ -379,7 +379,6 @@ message += `                              🔄 Recent Of $TCAPY Trading Activity
 // Schedule the function to run every hour (3600000 ms = 1 hour)
 setInterval(sendTcapyInfoAutomatically, 600000);
 
-// Execute immediately when the bot starts (optional)
 sendTcapyInfoAutomatically();
 
 bot.launch()
