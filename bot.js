@@ -3,8 +3,7 @@ import axios from 'axios';
 import dotenv from 'dotenv';
 import { fileURLToPath } from 'url';
 import path from 'path';
-import crypto from 'crypto'; // Thêm module crypto để tạo signature
-import WebSocket from 'ws'; // Added WebSocket import
+import crypto from 'crypto';
 
 // Fix path for .env in ES Modules
 const __filename = fileURLToPath(import.meta.url);
@@ -12,12 +11,8 @@ const __dirname = path.dirname(__filename);
 dotenv.config({ path: path.resolve(__dirname, '.env') });
 
 
-// Danh sách chatId của người dùng đăng ký nhận thông báo
-const subscribers = new Set(); // For trade notifications (if used elsewhere)
-const orderBookSubscribers = new Set(); // Fix: Define this for order book subscribers
-
 // Validate environment variables
-console.log('Environment variables:', {
+console.log('Environment variables:', { 
   BOT_TOKEN: process.env.BOT_TOKEN ? '***' : 'MISSING',
   CMC_API_KEY: process.env.CMC_API_KEY ? '***' : 'MISSING',
   MEXC_API_KEY: process.env.MEXC_API_KEY ? '***' : 'MISSING',
@@ -31,7 +26,7 @@ if (!process.env.BOT_TOKEN || !process.env.CMC_API_KEY) {
 
 
 
-// Khởi tạo bot và các biến môi trường
+// EnvEnv
 const bot = new Telegraf(process.env.BOT_TOKEN);
 const CMC_API_KEY = process.env.CMC_API_KEY;
 const MEXC_API_KEY = process.env.MEXC_API_KEY;
@@ -53,8 +48,6 @@ bot.start((ctx) => {
 💰 <b>Welcome to CoinMarketCap Bot</b> 💰
 Hello! Explore cryptocurrency data with these commands:
 - <code>/coin [symbol]</code> - Get details for a specific coin (e.g., /coin BTC)
-- <code>/top10</code> - View the top 10 coins by market cap
-- <code>/tcapy</code> - Get Tcapy data from MEXC
 - <code>/help</code> - Display all available commands
   `);
 });
@@ -66,13 +59,10 @@ bot.help((ctx) => {
 Here are the commands you can use:
 - <code>/start</code> - Show the welcome message
 - <code>/coin [symbol]</code> - Fetch information for a coin (e.g., /coin BTC)
-- <code>/top10</code> - List the top 10 coins by market cap
-- <code>/tcapy</code> - Get Tcapy data from MEXC
 - <code>/help</code> - View this command guide
   `);
 });
 
-// Coin command (giữ nguyên từ code của bạn)
 bot.command('coin', async (ctx) => {
   const symbol = ctx.payload.trim().toUpperCase();
   if (!symbol) return ctx.reply('❌ Please provide a coin symbol (e.g., /coin BTC)');
@@ -148,32 +138,6 @@ ${fullyDilutedMarketCapLine}🔄 <b>24h Volume:</b> $${(quote.volume_24h || 0).t
   }
 });
 
-// Top 10 coins command (giữ nguyên từ code của bạn)
-bot.command('top10', async (ctx) => {
-  try {
-    const response = await axios.get('https://pro-api.coinmarketcap.com/v1/cryptocurrency/listings/latest', {
-      params: { limit: 10, convert: 'USDT' },
-      headers: {
-        'X-CMC_PRO_API_KEY': CMC_API_KEY,
-        'Accept-Encoding': 'gzip',
-      },
-      timeout: 10000,
-    });
-
-    const coins = response.data.data;
-    let message = '🏆 <b>Top 10 Coins by Market Cap</b>\n\n';
-    coins.forEach((coin, index) => {
-      const quote = coin.quote.USDT;
-      message += `${index + 1}. <b>${coin.name} (${coin.symbol})</b>\n`;
-      message += `   Price: $${formatPrice(quote.price)}\n`;
-      message += `   Market Cap: $${(quote.market_cap || 0).toLocaleString()}\n\n`;
-    });
-    await ctx.replyWithHTML(message);
-  } catch (error) {
-    console.error('[ERROR]', error);
-    await ctx.reply('❌ Unable to fetch top 10 coins data');
-  }
-});
 
 async function fetchTradeHistory(symbol, limit = 1000) {
   try {
@@ -222,80 +186,6 @@ function calculateVolume(trades, startTime) {
   };
 }
 
-// Modified /tcapy command handler
-bot.command('tcapy', async (ctx) => {
-  try {
-    const symbol = 'TCAPYUSDT';
-
-    // Fetch trade history
-    const trades = await fetchTradeHistory(symbol, 1000);
-
-    // Define time frames in milliseconds
-    const now = Date.now();
-    const oneHourAgo = now - 60 * 60 * 1000; // 1 hour
-    const thirtyMinutesAgo = now - 30 * 60 * 1000; // 30 minutes
-    const fifteenMinutesAgo = now - 15 * 60 * 1000; // 15 minutes
-
-    // Calculate volumes for each time frame
-    const oneHourData = calculateVolume(trades, oneHourAgo);
-    const thirtyMinData = calculateVolume(trades, thirtyMinutesAgo);
-    const fifteenMinData = calculateVolume(trades, fifteenMinutesAgo);
-
-    // Fetch current order book
-    const depthResponse = await axios.get('https://api.mexc.com/api/v3/depth', {
-      params: { symbol, limit: 5 },
-    });
-
-    const { bids, asks } = depthResponse.data;
-
-    // Format message
-    let message = `📊 <b>Order Book (TCAPY/USDT)</b>\n\n`;
-
-    // Sell Orders - Executed Volumes
-    message += `<b>Sell Orders (Asks) - Executed Volumes:</b>\n`;
-    const timeFrames = [
-      { label: '1 Hour', data: oneHourData },
-      { label: '30 Minutes', data: thirtyMinData },
-      { label: '15 Minutes', data: fifteenMinData },
-    ];
-    timeFrames.forEach(({ label, data }) => {
-      message += `\n⏳ <i>${label}</i>\n`;
-      message += `Total Sell: $${data.totalSellValue}\n`;
-      message += `Total Amount: ${data.totalSellAmount} TCAPY\n`;
-    });
-
-    // Buy Orders - Executed Volumes
-    message += `\n<b>Buy Orders (Bids) - Executed Volumes:</b>\n`;
-    timeFrames.forEach(({ label, data }) => {
-      message += `\n⏳ <i>${label}</i>\n`;
-      message += `Total Buy: $${data.totalBuyValue}\n`;
-      message += `Total Amount: ${data.totalBuyAmount} TCAPY\n`;
-    });
-
-    // Current Order Book - Top 5 Bids and Asks
-    message += `\n🕒 <b>Current Order Book (Top 5)</b>\n`;
-    message += `<b>Buy Orders (Bids):</b>\n`;
-    bids.slice(0, 5).forEach(([price, amount]) => {
-      const total = (parseFloat(price) * parseFloat(amount)).toFixed(2);
-      message += `- Price: $${Number(price).toFixed(6)} | Amount: ${Number(amount).toFixed(2)} TCAPY | Total: ${total} USDT\n`;
-    });
-
-    message += `\n<b>Sell Orders (Asks):</b>\n`;
-    asks.slice(0, 5).forEach(([price, amount]) => {
-      const total = (parseFloat(price) * parseFloat(amount)).toFixed(2);
-      message += `- Price: $${Number(price).toFixed(6)} | Amount: ${Number(amount).toFixed(2)} TCAPY | Total: ${total} USDT\n`;
-    });
-
-    message += `\n🔗 <a href="https://www.mexc.com/exchange/TCAPY_USDT">View</a>`;
-
-    // Send the formatted message
-    await ctx.replyWithHTML(message);
-
-  } catch (error) {
-    console.error('[ERROR]', error);
-    await ctx.replyWithHTML('❌ Error fetching TCAPY data, please try again later');
-  }
-});
 
 bot.command('getgroupid', (ctx) => {
   const chatId = ctx.chat.id;
