@@ -17,6 +17,8 @@ console.log('Environment variables:', {
   CMC_API_KEY: process.env.CMC_API_KEY ? '***' : 'MISSING',
   MEXC_API_KEY: process.env.MEXC_API_KEY ? '***' : 'MISSING',
   MEXC_API_SECRET: process.env.MEXC_API_SECRET ? '***' : 'MISSING',
+  GROUP_CHAT_ID: process.env.GROUP_CHAT_ID ? '***' : 'MISSING',
+
 });
 
 if (!process.env.BOT_TOKEN || !process.env.CMC_API_KEY) {
@@ -31,6 +33,7 @@ const bot = new Telegraf(process.env.BOT_TOKEN);
 const CMC_API_KEY = process.env.CMC_API_KEY;
 const MEXC_API_KEY = process.env.MEXC_API_KEY;
 const MEXC_API_SECRET = process.env.MEXC_API_SECRET;
+const GROUP_CHAT_ID = process.env.GROUP_CHAT_ID;
 
 // Hàm định dạng giá
 function formatPrice(price) {
@@ -195,7 +198,7 @@ bot.command('getgroupid', (ctx) => {
 // Function to send TCAPY info automatically
 async function sendTcapyInfoAutomatically() {
   try {
-    const chatId = process.env.GROUP_CHAT_ID || '-1002372409968';
+    const chatId = process.env.GROUP_CHAT_ID;
     const symbol = 'TCAPYUSDT';
 
     // Fetch trade data
@@ -301,7 +304,7 @@ async function sendTcapyInfoAutomatically() {
     console.log('Sent TCAPY info automatically at:', new Date());
   } catch (error) {
     console.error('Error sending TCAPY info automatically:', error.message);
-    const chatId = process.env.GROUP_CHAT_ID || '-1002372409968';
+    const chatId = process.env.GROUP_CHAT_ID;
     let errorMessage = '❌ Error fetching TCAPY data.';
     if (error.message === 'No trade data available') {
       errorMessage += ' No recent trades found.';
