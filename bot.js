@@ -195,6 +195,24 @@ bot.command('getgroupid', (ctx) => {
   ctx.reply(`Group ID: ${chatId}`);
 });
 
+
+const botToken = process.env.BOT_TOKEN;
+const groupChatId = process.env.GROUP_CHAT_ID;
+
+async function sendTelegramMessage(message) {
+  const url = `https://api.telegram.org/bot${botToken}/sendMessage`;
+  try {
+    const response = await axios.post(url, {
+      chat_id: groupChatId,
+      text: message,
+      parse_mode: 'HTML',
+    });
+    console.log('Message sent successfully:', response.data);
+  } catch (error) {
+    console.error('Error sending message:', error.message);
+  }
+}
+
 // Function to send TCAPY info automatically
 async function sendTcapyInfoAutomatically() {
   try {
