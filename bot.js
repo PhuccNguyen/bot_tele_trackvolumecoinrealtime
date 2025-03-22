@@ -5,6 +5,19 @@ import { fileURLToPath } from 'url';
 import path from 'path';
 import crypto from 'crypto';
 
+import https from 'https';
+import dns from 'dns';
+
+// Force IPv4 to avoid ETIMEDOUT due to IPv6 issues
+const ipv4Agent = new https.Agent({
+  lookup: (hostname, options, callback) => {
+    dns.lookup(hostname, { family: 4 }, (err, address, family) => {
+      callback(err, address, family);
+    });
+  }
+});
+
+
 // Fix path for .env in ES Modules
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -29,7 +42,11 @@ if (!process.env.BOT_TOKEN || !process.env.CMC_API_KEY) {
 
 
 // EnvEnv
-const bot = new Telegraf(process.env.BOT_TOKEN);
+const bot = new Telegraf(process.env.BOT_TOKEN, {
+  telegram: {
+    agent: ipv4Agent
+  }
+});
 const CMC_API_KEY = process.env.CMC_API_KEY;
 const MEXC_API_KEY = process.env.MEXC_API_KEY;
 const MEXC_API_SECRET = process.env.MEXC_API_SECRET;
@@ -195,23 +212,6 @@ bot.command('getgroupid', (ctx) => {
   ctx.reply(`Group ID: ${chatId}`);
 });
 
-
-const botToken = process.env.BOT_TOKEN;
-const groupChatId = process.env.GROUP_CHAT_ID;
-
-async function sendTelegramMessage(message) {
-  const url = `https://api.telegram.org/bot${botToken}/sendMessage`;
-  try {
-    const response = await axios.post(url, {
-      chat_id: groupChatId,
-      text: message,
-      parse_mode: 'HTML',
-    });
-    console.log('Message sent successfully:', response.data);
-  } catch (error) {
-    console.error('Error sending message:', error.message);
-  }
-}
 
 // Function to send TCAPY info automatically
 async function sendTcapyInfoAutomatically() {
