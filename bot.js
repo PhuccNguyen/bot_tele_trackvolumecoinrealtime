@@ -5,19 +5,6 @@ import { fileURLToPath } from 'url';
 import path from 'path';
 import crypto from 'crypto';
 
-import https from 'https';
-import dns from 'dns';
-
-// Force IPv4 to avoid ETIMEDOUT due to IPv6 issues
-const ipv4Agent = new https.Agent({
-  lookup: (hostname, options, callback) => {
-    dns.lookup(hostname, { family: 4 }, (err, address, family) => {
-      callback(err, address, family);
-    });
-  }
-});
-
-
 // Fix path for .env in ES Modules
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -34,19 +21,9 @@ console.log('Environment variables:', {
 
 });
 
-if (!process.env.BOT_TOKEN || !process.env.CMC_API_KEY) {
-  console.error('ERROR: Missing BOT_TOKEN or CMC_API_KEY in .env file');
-  process.exit(1);
-}
-
-
 
 // EnvEnv
-const bot = new Telegraf(process.env.BOT_TOKEN, {
-  telegram: {
-    agent: ipv4Agent
-  }
-});
+const bot = new Telegraf(process.env.BOT_TOKEN);
 const CMC_API_KEY = process.env.CMC_API_KEY;
 const MEXC_API_KEY = process.env.MEXC_API_KEY;
 const MEXC_API_SECRET = process.env.MEXC_API_SECRET;
