@@ -271,17 +271,43 @@ const sellValue = fifteenMinData.totalSellValue;
 const totalVolume = buyValue + sellValue;
 const change = parseFloat(change15Min);
 
-let signalMessage ='';
+let signalMessage = '';
+const buySellRatio = buyValue / (sellValue || 1); // tránh chia 0
 
-if (change >= 1.5 && buyValue > sellValue && totalVolume > 1000) {
-  signalMessage = '💡 Positive signal: TCAPY is showing strong buying momentum and healthy market confidence!';
-} else if (Math.abs(change) < 1.5 && totalVolume >= 300) {
-  signalMessage = '💡 Stable signal: TCAPY is in a slight accumulation phase – strong hands are holding steady.';
-} else if (change <= -3 && sellValue > buyValue * 2 && totalVolume > 1000) {
-  signalMessage = '💡 Market is adjusting slightly – great time for smart accumulation and long-term vision.';
+if (change >= 10 && buySellRatio > 1.5 && totalVolume > 1500) {
+  signalMessage = '🚀 Massive breakout: TCAPY is exploding with extreme buy strength – watch for FOMO zones!';
+} else if (change >= 7 && buySellRatio > 1.4 && totalVolume > 1000) {
+  signalMessage = '📈 Strong bullish rally: Price accelerating fast with solid buying confidence.';
+} else if (change >= 5 && buySellRatio > 1.3) {
+  signalMessage = '💥 Market momentum rising: Buyers are dominating, and optimism is spreading.';
+} else if (change >= 3 && buySellRatio >= 1.2 && totalVolume > 500) {
+  signalMessage = '💡 TCAPY is gaining traction – a solid climb with active demand.';
+} else if (change >= 1.5 && buyValue > sellValue && totalVolume > 300) {
+  signalMessage = '✅ Positive signal: healthy buying momentum and signs of bullish continuation.';
+} else if (change >= 1.0 && buySellRatio > 1.1) {
+  signalMessage = '🟢 Mild strength detected: gradual move up with buyer support.';
+} else if (change >= 0.5 && totalVolume > 200) {
+  signalMessage = '📊 Market is tilting upward slightly – slow growth, but promising.';
+} else if (change >= 0.2) {
+  signalMessage = '🌱 Small uptick: early signs of accumulation – worth keeping an eye on.';
+} else if (change > -0.1 && change < 0.2) {
+  signalMessage = '🌾 Sideways phase: stable zone – often the base before bigger moves.';
+} else if (change <= -0.1 && change > -0.3 && sellValue > buyValue) {
+  signalMessage = '🌥 Light dip: nothing alarming – typical minor correction.';
+} else if (change <= -0.3 && change > -0.7 && buySellRatio < 0.9) {
+  signalMessage = '🟠 Slight weakness: selling is ahead but not overwhelming – calm before next move.';
+} else if (change <= -0.7 && change > -1.5 && sellValue > buyValue * 1.2) {
+  signalMessage = '🔄 Market cooling down: some taking profit – patient buyers may find chance.';
+} else if (change <= -1.5 && change > -3 && totalVolume > 400) {
+  signalMessage = '📉 Pullback zone: short-term correction – long-term outlook can remain intact.';
+} else if (change <= -3 && change > -6 && sellValue > buyValue * 1.5) {
+  signalMessage = '🌀 Market shakeout: stronger sell wave – often followed by rebound interest.';
+} else if (change <= -6 && totalVolume > 700) {
+  signalMessage = '⚠️ Deep correction: High volatility – smart money may be positioning.';
 } else {
-  signalMessage = '💡 Neutral signal: Market is calm and balanced – steady moves often precede growth.';
+  signalMessage = '💤 Neutral signal: market activity is balanced or unclear – keep monitoring.';
 }
+
 
 
 message += `${signalMessage}\n`;
