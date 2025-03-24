@@ -29,6 +29,12 @@ const MEXC_API_KEY = process.env.MEXC_API_KEY;
 const MEXC_API_SECRET = process.env.MEXC_API_SECRET;
 const GROUP_CHAT_ID = process.env.GROUP_CHAT_ID;
 
+bot.on('message', (ctx, next) => {
+  if (ctx.chat.id.toString() !== GROUP_CHAT_ID.toString()) return;
+  return next();
+});
+
+
 // Hàm định dạng giá
 function formatPrice(price) {
   return parseFloat(price).toFixed(6).replace(/\.?0+$/, '');
@@ -44,7 +50,7 @@ bot.start((ctx) => {
   ctx.replyWithHTML(`
 💰 <b>Welcome to CoinMarketCap Bot</b> 💰
 Hello! Explore cryptocurrency data with these commands:
-- <code>/coin [symbol]</code> - Get details for a specific coin (e.g., /coin BTC)
+- <code>/[symbol] </code> - Get details for a specific coin (e.g., /coin Tcapy)
 - <code>/help</code> - Display all available commands
   `);
 });
@@ -55,7 +61,7 @@ bot.help((ctx) => {
 📚 <b>Command Guide</b>
 Here are the commands you can use:
 - <code>/start</code> - Show the welcome message
-- <code>/coin [symbol]</code> - Fetch information for a coin (e.g., /coin BTC)
+- <code>/Tcapy </code> - Fetch information for a coin (e.g., /coin Tcapy)
 - <code>/help</code> - View this command guide
   `);
 });
@@ -251,13 +257,34 @@ async function sendTcapyInfoAutomatically() {
       });
     };
 
-    // Build the Telegram message
-    let message = `<b>🚨 TCAPY/USDT Real-Time Update 📊</b>\n\n`;
-    message += `💰 <b>Current Price:</b> $${formatNumber(currentPrice, 6)} USDT\n`;
-    message += `📈 <b>Price Changes:</b>\n`;
-    message += `- 15 Min: ${change15Min}%\n`;
-    message += `- 30 Min: ${change30Min}%\n`;
-    message += `- 1 Hour: ${change1Hour}%\n`;
+// Build the Telegram message - Part 1: Header + Price + Price Movement
+let message = `<b>🚨 TCAPY/USDT Real-Time Update </b>\n\n`;
+
+message += `<b>💰 Current Price:</b> $${formatNumber(currentPrice, 6)} USDT\n`;
+message += `📉 <b>Price Movement:</b>\n`;
+message += `🕒 15m: ${change15Min}% | ⏳ 30m: ${change30Min}% | 🕰 1h: ${change1Hour}%\n\n`;
+
+
+// Signal logic based on 15m price change and volume
+const buyValue = fifteenMinData.totalBuyValue;
+const sellValue = fifteenMinData.totalSellValue;
+const totalVolume = buyValue + sellValue;
+const change = parseFloat(change15Min);
+
+let signalMessage ='';
+
+if (change >= 1.5 && buyValue > sellValue && totalVolume > 1000) {
+  signalMessage = '💡 Positive signal: TCAPY is showing strong buying momentum and healthy market confidence!';
+} else if (Math.abs(change) < 1.5 && totalVolume >= 300) {
+  signalMessage = '💡 Stable signal: TCAPY is in a slight accumulation phase – strong hands are holding steady.';
+} else if (change <= -3 && sellValue > buyValue * 2 && totalVolume > 1000) {
+  signalMessage = '💡 Market is adjusting slightly – great time for smart accumulation and long-term vision.';
+} else {
+  signalMessage = '💡 Neutral signal: Market is calm and balanced – steady moves often precede growth.';
+}
+
+
+message += `${signalMessage}\n`;
 
     // Add alert for significant price change
     if (Math.abs(change15Min) >= 5) {
@@ -279,20 +306,35 @@ async function sendTcapyInfoAutomatically() {
       message += `- <b>Last ${label}:</b> $${formatNumber(data.totalBuyValue, 2)} | ${formatNumber(data.totalBuyAmount, 2)} TCAPY\n`;
     });
 
-    message += `\n🕒 <b>Current Order Book (Top 5)</b>\n`;
-    message += `🟢 <b>Buy Orders:</b>\n`;
-    bids.slice(0, 5).forEach(([price, amount]) => {
-      const total = parseFloat(price) * parseFloat(amount);
-      message += `- $${formatNumber(price, 6)} | ${formatNumber(amount, 2)} TCAPY | $${formatNumber(total, 2)}\n`;
-    });
-    message += `🔴 <b>Sell Orders:</b>\n`;
-    asks.slice(0, 5).forEach(([price, amount]) => {
-      const total = parseFloat(price) * parseFloat(amount);
-      message += `- $${formatNumber(price, 6)} | ${formatNumber(amount, 2)} TCAPY | $${formatNumber(total, 2)}\n`;
-    });
+// 🟢 Part 33: Buy Orders - Top 5 Highest Volume
+const buySorted = [...bids].map(([price, amount]) => {
+  const total = parseFloat(price) * parseFloat(amount);
+  return { price: parseFloat(price), amount: parseFloat(amount), total };
+});
 
-    message += `\n🔗 <a href="https://www.mexc.com/exchange/TCAPY_USDT">View</a>`;
-    message += `\n<b>Data fetched at:</b> ${new Date().toUTCString()} (UTC) In London UK`;
+// Sắp xếp theo tổng volume giảm dần và lấy top 5
+const buyTop5 = buySorted.sort((a, b) => b.total - a.total).slice(0, 5);
+
+// Tìm lệnh có tổng volume lớn nhất
+const maxBuyTotal = buyTop5[0].total;
+
+// Render bảng + tính tổng volume
+let totalBuyVolume = 0;
+message += `\n🟢 <b>🕒 Current Order Book (Top 5)</b>\n`;
+buyTop5.forEach(({ price, amount, total }) => {
+  totalBuyVolume += total;
+  const isStrong = total === maxBuyTotal;
+  message += `${isStrong ? '⭐ ' : ''}- $${formatNumber(price, 6)} | ${formatNumber(amount)} TCAPY | $${formatNumber(total)}\n`;
+});
+
+message += `📊 Total Buy Volume (Top 5): $${formatNumber(totalBuyVolume)}\n\n`;
+
+
+ // 🧾 Part 4: Footer
+message += `\n🔗 <a href="https://www.mexc.com/exchange/TCAPY_USDT">View on MEXC</a>`;
+message += `\n🌐 Updated by <b>TCAPY Community Bot</b>`;
+message += `\n🕒 Auto updates every 10 minutes`;
+
 
     // Send the message
     await bot.telegram.sendMessage(chatId, message, { parse_mode: 'HTML' });
