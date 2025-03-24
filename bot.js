@@ -306,29 +306,48 @@ message += `${signalMessage}\n`;
       message += `- <b>Last ${label}:</b> $${formatNumber(data.totalBuyValue, 2)} | ${formatNumber(data.totalBuyAmount, 2)} TCAPY\n`;
     });
 
-// 🟢 Part 33: Buy Orders - Top 5 Highest Volume
-const buySorted = [...bids].map(([price, amount]) => {
-  const total = parseFloat(price) * parseFloat(amount);
-  return { price: parseFloat(price), amount: parseFloat(amount), total };
-});
+    const threeHoursAgo = Date.now() - 3 * 60 * 60 * 1000;
 
-// Sắp xếp theo tổng volume giảm dần và lấy top 5
-const buyTop5 = buySorted.sort((a, b) => b.total - a.total).slice(0, 5);
-
-// Tìm lệnh có tổng volume lớn nhất
-const maxBuyTotal = buyTop5[0].total;
-
-// Render bảng + tính tổng volume
-let totalBuyVolume = 0;
-message += `\n🟢 <b>🕒 Current Order Book (Top 5)</b>\n`;
-buyTop5.forEach(({ price, amount, total }) => {
-  totalBuyVolume += total;
-  const isStrong = total === maxBuyTotal;
-  message += `${isStrong ? '⭐ ' : ''}- $${formatNumber(price, 6)} | ${formatNumber(amount)} TCAPY | $${formatNumber(total)}\n`;
-});
-
-message += `📊 Total Buy Volume (Top 5): $${formatNumber(totalBuyVolume)}\n\n`;
-
+    const groupedBuyZones = {};
+    trades
+      .filter(trade => trade.time >= threeHoursAgo && !trade.isBuyerMaker) // Real Buy
+      .forEach(trade => {
+        const price = parseFloat(trade.price).toFixed(6);
+        const qty = parseFloat(trade.qty);
+        const total = qty * parseFloat(price);
+        if (total < 10) return; // ✅ chỉ lọc những lệnh cực nhỏ, giữ lại phần meaningful
+        if (!groupedBuyZones[price]) {
+          groupedBuyZones[price] = { qty: 0, total: 0 };
+        }
+        groupedBuyZones[price].qty += qty;
+        groupedBuyZones[price].total += total;
+      });
+    
+    const topBuyZones = Object.entries(groupedBuyZones)
+      .map(([price, data]) => ({
+        price: parseFloat(price),
+        qty: data.qty,
+        total: data.total,
+      }))
+      .sort((a, b) => b.total - a.total)
+      .slice(0, 5);
+    
+    if (topBuyZones.length > 0) {
+      const maxZoneTotal = topBuyZones[0]?.total || 0;
+      let totalBuyZoneVolume = 0;
+    
+      message += `\n<b>🟢 Top Buy Zones</b>\n`;
+      topBuyZones.forEach(({ price, qty, total }) => {
+        totalBuyZoneVolume += total;
+        const highlight = total === maxZoneTotal ? '' : '';
+        message += `${highlight}$${formatNumber(price, 6)} | ${formatNumber(qty)} TCAPY | $${formatNumber(total)}\n`;
+      });
+    
+      message += `📊 Total Buy Volume: $${formatNumber(totalBuyZoneVolume)}\n`;
+    } else {
+      message += `\n🟢 No significant buy zones detected in the last 3 hours.\n`;
+    }
+    
 
  // 🧾 Part 4: Footer
 message += `\n🔗 <a href="https://www.mexc.com/exchange/TCAPY_USDT">View on MEXC</a>`;
