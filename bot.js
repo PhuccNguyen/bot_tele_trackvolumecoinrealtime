@@ -306,6 +306,8 @@ message += `${signalMessage}\n`;
       message += `- <b>Last ${label}:</b> $${formatNumber(data.totalBuyValue, 2)} | ${formatNumber(data.totalBuyAmount, 2)} TCAPY\n`;
     });
 
+
+    //part333333333333333part333333333333333
     const threeHoursAgo = Date.now() - 3 * 60 * 60 * 1000;
 
     const groupedBuyZones = {};
@@ -330,13 +332,13 @@ message += `${signalMessage}\n`;
         total: data.total,
       }))
       .sort((a, b) => b.total - a.total)
-      .slice(0, 5);
+      .slice(0, 3);
     
     if (topBuyZones.length > 0) {
       const maxZoneTotal = topBuyZones[0]?.total || 0;
       let totalBuyZoneVolume = 0;
     
-      message += `\n<b>🟢 Top Buy Zones</b>\n`;
+      message += `\n<b>🏆 Top Buy Zones</b>\n`;
       topBuyZones.forEach(({ price, qty, total }) => {
         totalBuyZoneVolume += total;
         const highlight = total === maxZoneTotal ? '' : '';
