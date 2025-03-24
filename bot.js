@@ -266,51 +266,77 @@ message += `🕒 15m: ${change15Min}% | ⏳ 30m: ${change30Min}% | 🕰 1h: ${ch
 
 
 // Signal logic based on 15m price change and volume
-const buyValue = fifteenMinData.totalBuyValue;
-const sellValue = fifteenMinData.totalSellValue;
-const totalVolume = buyValue + sellValue;
-const change = parseFloat(change15Min);
+const buyValue = parseFloat(fifteenMinData.totalBuyValue);  // Buy volume from 15m
+const sellValue = parseFloat(fifteenMinData.totalSellValue);  // Sell volume from 15m
 
-let signalMessage = '';
-const buySellRatio = buyValue / (sellValue || 1); // tránh chia 0
+const totalVolume = buyValue + sellValue;  // Total volume of trades
 
-if (change >= 10 && buySellRatio > 1.5 && totalVolume > 1500) {
+// Handling division by zero for buy/sell ratio calculation
+const buySellRatio = sellValue === 0 ? 1 : buyValue / sellValue; // Avoid division by zero
+
+// Parse change value for 1-hour timeframe
+const change = parseFloat(change1Hour);
+
+let signalMessage = '';  // Initialize the signal message
+
+// Array of positive messages for price decreases (when market is correcting)
+const positiveDecreaseMessages = [
+  'Stay calm – dips like this often lead to strong rebounds!',
+  'This could be a great buying opportunity for patient investors.',
+  'Volatility is normal – our community remains united and strong!',
+  'Support levels might hold – a bounce could be near.',
+  'Smart money might be accumulating – don’t panic!',
+  'Long-term vision is still solid – hold strong!',
+];
+
+// Function to get a random positive message for market corrections
+const getPositiveMessage = () => positiveDecreaseMessages[Math.floor(Math.random() * positiveDecreaseMessages.length)];
+
+// Enhanced signal logic with improved cases for better clarity
+if (change >= 15 && buySellRatio > 2.0 && totalVolume > 2000) {
+  signalMessage = '🌋 Volcanic surge: TCAPY is erupting with massive buy pressure – FOMO incoming!';
+} else if (change >= 10 && buySellRatio > 1.5 && totalVolume > 1500) {
   signalMessage = '🚀 Massive breakout: TCAPY is exploding with extreme buy strength – watch for FOMO zones!';
 } else if (change >= 7 && buySellRatio > 1.4 && totalVolume > 1000) {
   signalMessage = '📈 Strong bullish rally: Price accelerating fast with solid buying confidence.';
-} else if (change >= 5 && buySellRatio > 1.3) {
+} else if (change >= 5 && buySellRatio > 1.3 && totalVolume > 750) {
   signalMessage = '💥 Market momentum rising: Buyers are dominating, and optimism is spreading.';
 } else if (change >= 3 && buySellRatio >= 1.2 && totalVolume > 500) {
-  signalMessage = '💡 TCAPY is gaining traction – a solid climb with active demand.';
+  signalMessage = '💡 TCAPY gaining momentum – a solid climb with active demand.';
+} else if (change >= 2 && buySellRatio > 1.15 && totalVolume > 400) {
+  signalMessage = '🌟 Strong uptrend: Buyers stepping in – good signs of strength.';
 } else if (change >= 1.5 && buyValue > sellValue && totalVolume > 300) {
-  signalMessage = '✅ Positive signal: healthy buying momentum and signs of bullish continuation.';
+  signalMessage = '✅ Positive signal: Healthy buying momentum and bullish continuation is possible.';
 } else if (change >= 1.0 && buySellRatio > 1.1) {
-  signalMessage = '🟢 Mild strength detected: gradual move up with buyer support.';
+  signalMessage = '🟢 Mild strength detected: Gradual move up with buyer support.';
 } else if (change >= 0.5 && totalVolume > 200) {
-  signalMessage = '📊 Market is tilting upward slightly – slow growth, but promising.';
-} else if (change >= 0.2) {
-  signalMessage = '🌱 Small uptick: early signs of accumulation – worth keeping an eye on.';
-} else if (change > -0.1 && change < 0.2) {
-  signalMessage = '🌾 Sideways phase: stable zone – often the base before bigger moves.';
+  signalMessage = '📊 Slow and steady growth: Market trending upward slightly, potential ahead.';
+} else if (change >= 0.2 && buySellRatio > 1.0) {
+  signalMessage = '🌱 Small uptick: Early signs of accumulation – worth keeping an eye on!';
+} else if (change > -0.1 && change < 0.2 && totalVolume > 150) {
+  signalMessage = '🌾 Sideways phase: Stable zone – often the base before bigger moves.';
 } else if (change <= -0.1 && change > -0.3 && sellValue > buyValue) {
-  signalMessage = '🌥 Light dip: nothing alarming – typical minor correction.';
+  signalMessage = '🌥 Light dip: Nothing alarming – typical minor correction. ' + getPositiveMessage();
 } else if (change <= -0.3 && change > -0.7 && buySellRatio < 0.9) {
-  signalMessage = '🟠 Slight weakness: selling is ahead but not overwhelming – calm before next move.';
+  signalMessage = '🟠 Slight weakness: Selling ahead but not overwhelming – calm before next move. ' + getPositiveMessage();
 } else if (change <= -0.7 && change > -1.5 && sellValue > buyValue * 1.2) {
-  signalMessage = '🔄 Market cooling down: some taking profit – patient buyers may find chance.';
+  signalMessage = '🔄 Market cooling: Some profit-taking – patient buyers may find a chance. ' + getPositiveMessage();
 } else if (change <= -1.5 && change > -3 && totalVolume > 400) {
-  signalMessage = '📉 Pullback zone: short-term correction – long-term outlook can remain intact.';
+  signalMessage = '📉 Pullback zone: Short-term correction – long-term outlook can stay solid. ' + getPositiveMessage();
 } else if (change <= -3 && change > -6 && sellValue > buyValue * 1.5) {
-  signalMessage = '🌀 Market shakeout: stronger sell wave – often followed by rebound interest.';
-} else if (change <= -6 && totalVolume > 700) {
-  signalMessage = '⚠️ Deep correction: High volatility – smart money may be positioning.';
+  signalMessage = '🌀 Market shakeout: Stronger sell wave – rebounds often follow! ' + getPositiveMessage();
+} else if (change <= -6 && change > -10 && totalVolume > 700) {
+  signalMessage = '⚠️ Deep correction: High volatility – smart money might be eyeing this. ' + getPositiveMessage();
+} else if (change <= -10 && sellValue > buyValue * 2.0) {
+  signalMessage = '🌩 Heavy sell-off: Intense pressure – could be a rare chance for bold buyers. ' + getPositiveMessage();
 } else {
-  signalMessage = '💤 Neutral signal: market activity is balanced or unclear – keep monitoring.';
+  signalMessage = '💤 Neutral signal: Market activity is balanced or unclear – stay alert and continue observing.';
 }
 
-
-
+// Append the signal message to the main message
 message += `${signalMessage}\n`;
+
+
 
     // Add alert for significant price change
     if (Math.abs(change15Min) >= 5) {
