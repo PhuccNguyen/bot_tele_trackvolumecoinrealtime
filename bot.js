@@ -281,7 +281,7 @@ const sellValue = parseFloat(selectedData.totalSellValue);
 const totalVolume = buyValue + sellValue;
 const buySellRatio = sellValue === 0 ? 1 : buyValue / sellValue;
 
-// Logic tín hiệu dựa chủ yếu trên thay đổi giá
+// Lgic signal
 let signalMessage = '';
 if (selectedChange >= 15) {
   signalMessage = `🌋 Volcanic surge in ${maxChangeTimeframe.timeframe}: TCAPY is erupting with massive buy pressure – FOMO incoming!`;
@@ -317,7 +317,7 @@ if (selectedChange >= 15) {
   signalMessage = `🌀 Market shakeout in ${maxChangeTimeframe.timeframe}: Stronger sell wave – rebounds often follow!`;
 }
 
-// Thêm thông tin bổ sung dựa trên buySellRatio và totalVolume
+// Base on buySellRatio và totalVolume
 if (buySellRatio > 1.5 && totalVolume > 1000) {
   signalMessage += ` 📈 High buy pressure detected!`;
 } else if (buySellRatio < 0.8 && totalVolume > 1000) {
@@ -326,7 +326,7 @@ if (buySellRatio > 1.5 && totalVolume > 1000) {
   signalMessage += ` 🔊 Active market with high participation!`;
 }
 
-// Ghép tín hiệu vào thông điệp chính
+// signam out putput
 message += `${signalMessage}\n`;
 
 
@@ -383,7 +383,7 @@ message += `${signalMessage}\n`;
       const maxZoneTotal = topBuyZones[0]?.total || 0;
       let totalBuyZoneVolume = 0;
     
-      message += `\n<b>🏆 Top Buy Zones</b>\n`;
+      message += `\n<b>🏆 Top 3 Buy Zones Right Now</b>\n`;
       topBuyZones.forEach(({ price, qty, total }) => {
         totalBuyZoneVolume += total;
         const highlight = total === maxZoneTotal ? '' : '';
