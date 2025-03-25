@@ -200,6 +200,7 @@ bot.command('getgroupid', (ctx) => {
 async function sendTcapyInfoAutomatically() {
   try {
     const chatId = process.env.GROUP_CHAT_ID;
+    const messageThreadId = process.env.MESSAGE_THREAD_ID;
     const symbol = 'TCAPYUSDT';
 
     // Fetch trade data
@@ -402,7 +403,8 @@ message += `\n🌐 Updated by <b>TCAPY Community Bot</b>`;
 message += `\n🕒 Auto updates every 10 minutes`;
 
     // Send the message
-    await bot.telegram.sendMessage(chatId, message, { parse_mode: 'HTML' });
+    await bot.telegram.sendMessage(chatId, message, { parse_mode: 'HTML', message_thread_id: messageThreadId,});
+
     console.log('Sent TCAPY info automatically at:', new Date());
   } catch (error) {
     console.error('Error sending TCAPY info automatically:', error.message);
