@@ -281,7 +281,7 @@ const sellValue = parseFloat(selectedData.totalSellValue);
 const totalVolume = buyValue + sellValue;
 const buySellRatio = sellValue === 0 ? 1 : buyValue / sellValue;
 
-// Lgic signal
+// Logicogic signal
 let signalMessage = '';
 if (selectedChange >= 15) {
   signalMessage = `🌋 Volcanic surge in ${maxChangeTimeframe.timeframe}: TCAPY is erupting with massive buy pressure – FOMO incoming!`;
@@ -400,7 +400,6 @@ message += `${signalMessage}\n`;
 message += `\n🔗 <a href="https://www.mexc.com/exchange/TCAPY_USDT">View on MEXC</a>`;
 message += `\n🌐 Updated by <b>TCAPY Community Bot</b>`;
 message += `\n🕒 Auto updates every 10 minutes`;
-
 
     // Send the message
     await bot.telegram.sendMessage(chatId, message, { parse_mode: 'HTML' });
