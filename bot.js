@@ -31,12 +31,6 @@ const MEXC_API_KEY = process.env.MEXC_API_KEY;
 const MEXC_API_SECRET = process.env.MEXC_API_SECRET;
 const GROUP_CHAT_ID = process.env.GROUP_CHAT_ID;
 
-bot.on('message', (ctx, next) => {
-  if (ctx.chat.id.toString() !== GROUP_CHAT_ID.toString()) return;
-  return next();
-});
-
-
 // Hàm định dạng giá
 function formatPrice(price) {
   return parseFloat(price).toFixed(6).replace(/\.?0+$/, '');
@@ -520,8 +514,11 @@ setInterval(() => sendTcapyInfoAutomatically(), 7200000);
 // Gửi ngay lập tức khi bot khởi động (tùy chọn)
 sendTcapyInfoAutomatically();
 
-// Thêm lệnh /tcapy để gửi theo yêu cầu
-bot.command('tcapy', async (ctx) => {
+// Lệnh /tcapy@Tcapy_bot
+bot.command('tcapy@Tcapy_bot', async (ctx) => {
+  if (ctx.chat.id.toString() !== GROUP_CHAT_ID.toString()) {
+    return ctx.reply('❌ This command is only available in the designated group.');
+  }
   await sendTcapyInfoAutomatically(ctx);
 });
 
