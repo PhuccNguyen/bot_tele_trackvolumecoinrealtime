@@ -38,6 +38,6 @@ Thumbs.db
 coverage/
 
 # Ignore lock files (optional, depending on your team’s preferences)
-package-lock.json
+# Xóa dòng package-lock.json để đảm bảo tính nhất quán của dependencies
+# package-lock.json
 yarn.lock
- 

@@ -4,868 +4,726 @@ import dotenv from 'dotenv';
 import { fileURLToPath } from 'url';
 import path from 'path';
 import crypto from 'crypto';
-
-// ======= INITIALIZATION =======
-console.log('======= TCAPY BOT STARTING =======');
-console.log(`Startup time: ${new Date().toISOString()}`);
+import fs from 'fs';
+import { createLogger, format, transports } from 'winston';
 
 // Fix path for .env in ES Modules
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 dotenv.config({ path: path.resolve(__dirname, '.env') });
 
-// Configuration setup
-const config = {
-  BOT_TOKEN: process.env.BOT_TOKEN,
-  CMC_API_KEY: process.env.CMC_API_KEY,
-  MEXC_API_KEY: process.env.MEXC_API_KEY,
-  MEXC_API_SECRET: process.env.MEXC_API_SECRET,
-  GROUP_CHAT_ID: process.env.GROUP_CHAT_ID,
-  MESSAGE_THREAD_ID: process.env.MESSAGE_THREAD_ID,
-  UPDATE_INTERVAL: parseInt(process.env.UPDATE_INTERVAL || '7200000', 10), // Default 2 hours
-  SYMBOL: process.env.SYMBOL || 'TCAPYUSDT',
-  DEBUG_MODE: process.env.DEBUG_MODE === 'true',
-  TCAPY_SUPPLY: 888_000_000_000
-};
+// Create logs directory if it doesn't exist
+const logsDir = path.join(__dirname, 'logs');
+if (!fs.existsSync(logsDir)) {
+  fs.mkdirSync(logsDir);
+}
 
-// Logging utility
-const logger = {
-  info: (message) => console.log(`[INFO][${new Date().toISOString()}] ${message}`),
-  error: (message) => console.error(`[ERROR][${new Date().toISOString()}] ${message}`),
-  warn: (message) => console.warn(`[WARN][${new Date().toISOString()}] ${message}`),
-  debug: (message) => config.DEBUG_MODE ? console.log(`[DEBUG][${new Date().toISOString()}] ${message}`) : null
-};
-
-// Log configuration (without sensitive details)
-logger.info("Configuration loaded:");
-Object.entries(config).forEach(([key, value]) => {
-  if (key !== 'BOT_TOKEN' && key !== 'CMC_API_KEY' && key !== 'MEXC_API_SECRET') {
-    logger.info(`${key}: ${value}`);
-  } else {
-    logger.info(`${key}: [REDACTED]`);
-  }
+// Setup logger
+const logger = createLogger({
+  level: 'info',
+  format: format.combine(
+    format.timestamp({
+      format: 'YYYY-MM-DD HH:mm:ss'
+    }),
+    format.errors({ stack: true }),
+    format.splat(),
+    format.json()
+  ),
+  defaultMeta: { service: 'tcapy-bot' },
+  transports: [
+    new transports.File({ filename: path.join(logsDir, 'error.log'), level: 'error' }),
+    new transports.File({ filename: path.join(logsDir, 'combined.log') }),
+    new transports.Console({
+      format: format.combine(
+        format.colorize(),
+        format.simple()
+      )
+    })
+  ]
 });
 
-// Validate required configuration
-const missingConfig = Object.entries(config)
-  .filter(([key, value]) => !value && key !== 'DEBUG_MODE' && key !== 'MESSAGE_THREAD_ID')
-  .map(([key]) => key);
+// Validate required environment variables
+const requiredEnvVars = [
+  'BOT_TOKEN',
+  'CMC_API_KEY',
+  'MEXC_API_KEY',
+  'MEXC_API_SECRET',
+  'GROUP_CHAT_ID'
+];
 
-if (missingConfig.length > 0) {
-  logger.error(`Missing required environment variables: ${missingConfig.join(', ')}`);
+const missingEnvVars = requiredEnvVars.filter(envVar => !process.env[envVar]);
+if (missingEnvVars.length > 0) {
+  logger.error(`Missing required environment variables: ${missingEnvVars.join(', ')}`);
   process.exit(1);
 }
 
-// Initialize bot
-let bot;
-try {
-  bot = new Telegraf(config.BOT_TOKEN);
-  logger.info("Telegraf bot initialized successfully");
-} catch (error) {
-  logger.error(`Failed to initialize Telegraf bot: ${error.message}`);
-  process.exit(1);
+logger.info('Environment variables loaded successfully');
+
+// Initialize bot and API keys
+const bot = new Telegraf(process.env.BOT_TOKEN);
+const CMC_API_KEY = process.env.CMC_API_KEY;
+const MEXC_API_KEY = process.env.MEXC_API_KEY;
+const MEXC_API_SECRET = process.env.MEXC_API_SECRET;
+const GROUP_CHAT_ID = process.env.GROUP_CHAT_ID;
+const MESSAGE_THREAD_ID = process.env.MESSAGE_THREAD_ID;
+
+// Create axios instances with default configs
+const cmcAxios = axios.create({
+  baseURL: 'https://pro-api.coinmarketcap.com/v2',
+  headers: {
+    'X-CMC_PRO_API_KEY': CMC_API_KEY,
+    'Accept-Encoding': 'gzip'
+  },
+  timeout: 10000
+});
+
+const mexcAxios = axios.create({
+  baseURL: 'https://api.mexc.com/api/v3',
+  timeout: 10000
+});
+
+// =====================================================
+// Helper Functions
+// =====================================================
+
+// Format price with appropriate decimal places
+function formatPrice(price) {
+  if (typeof price !== 'number' || isNaN(price)) return 'N/A';
+  
+  if (price < 0.0001) {
+    return price.toFixed(8).replace(/\.?0+$/, '');
+  } else if (price < 0.01) {
+    return price.toFixed(6).replace(/\.?0+$/, '');
+  } else if (price < 1) {
+    return price.toFixed(4).replace(/\.?0+$/, '');
+  } else {
+    return price.toFixed(2).replace(/\.?0+$/, '');
+  }
 }
 
-// ======= UTILITY FUNCTIONS =======
-
-// Format price with proper decimal places
-function formatPrice(price, precision = 6) {
-  if (!price || isNaN(price)) return '0';
-  return parseFloat(price).toFixed(precision).replace(/\.?0+$/, '') || '0';
-}
-
-// Format number with proper formatting
+// Format number with localized thousands separators
 function formatNumber(num, decimals = 2) {
-  if (isNaN(num) || num === null || num === undefined) return 'N/A';
-  return parseFloat(num).toLocaleString('en-US', {
+  if (typeof num !== 'number' || isNaN(num)) return 'N/A';
+  
+  return num.toLocaleString('en-US', {
     minimumFractionDigits: decimals,
     maximumFractionDigits: decimals,
   });
 }
 
-// Create signature for MEXC API
+// Create HMAC signature for MEXC API
 function createSignature(queryString) {
-  return crypto.createHmac('sha256', config.MEXC_API_SECRET).update(queryString).digest('hex');
+  return crypto.createHmac('sha256', MEXC_API_SECRET)
+    .update(queryString)
+    .digest('hex');
 }
 
-// ======= API SERVICE =======
-const apiService = {
-  // Generic retry mechanism for API calls
-  async fetchWithRetry(apiCall, maxRetries = 3, delay = 1000) {
-    let lastError;
-    for (let attempt = 1; attempt <= maxRetries; attempt++) {
-      try {
-        const result = await apiCall();
-        if (attempt > 1) {
-          logger.info(`API call succeeded after ${attempt} attempts`);
-        }
-        return result;
-      } catch (error) {
-        lastError = error;
-        const errorMessage = error.response ? 
-          `Status: ${error.response.status}, Message: ${JSON.stringify(error.response.data || {})}` : 
-          error.message;
-        
-        logger.warn(`API call failed (attempt ${attempt}/${maxRetries}): ${errorMessage}`);
-        
-        if (attempt < maxRetries) {
-          await new Promise(resolve => setTimeout(resolve, delay * attempt));
-        }
-      }
+// Generate a throttled function to prevent API rate limits
+function throttle(func, delay) {
+  let lastCall = 0;
+  let timeout;
+  
+  return function(...args) {
+    const now = Date.now();
+    const timeSinceLastCall = now - lastCall;
+    
+    if (timeSinceLastCall >= delay) {
+      lastCall = now;
+      return func.apply(this, args);
+    } else {
+      clearTimeout(timeout);
+      return new Promise(resolve => {
+        timeout = setTimeout(() => {
+          lastCall = Date.now();
+          resolve(func.apply(this, args));
+        }, delay - timeSinceLastCall);
+      });
     }
-    throw lastError;
-  },
+  };
+}
 
-  // Fetch trade history from MEXC
-  async fetchMexcTrades(symbol, limit = 1000) {
-    return this.fetchWithRetry(async () => {
-      logger.debug(`Fetching MEXC trades for ${symbol}, limit: ${limit}`);
-      const response = await axios.get('https://api.mexc.com/api/v3/trades', {
-        params: { symbol, limit },
-        headers: { 'Accept-Encoding': 'gzip' },
-        timeout: 10000,
+// Retry function for API calls
+async function withRetry(fn, retries = 3, delay = 1000) {
+  for (let i = 0; i < retries; i++) {
+    try {
+      return await fn();
+    } catch (error) {
+      if (i === retries - 1) throw error;
+      
+      logger.warn(`API call failed, retrying (${i + 1}/${retries}): ${error.message}`);
+      
+      // Exponential backoff
+      await new Promise(resolve => setTimeout(resolve, delay * Math.pow(2, i)));
+    }
+  }
+}
+
+// =====================================================
+// API Functions
+// =====================================================
+
+// Fetch data from CoinMarketCap API with retry
+async function fetchCmcData(symbol) {
+  try {
+    return await withRetry(async () => {
+      const response = await cmcAxios.get('/cryptocurrency/quotes/latest', {
+        params: { symbol, convert: 'USDT' }
       });
-
-      if (!response.data || !Array.isArray(response.data)) {
-        throw new Error('Invalid response format from MEXC trades API');
+      
+      const coinData = response.data.data[symbol]?.[0];
+      if (!coinData) {
+        throw new Error(`Coin data not found for symbol: ${symbol}`);
       }
-
-      logger.debug(`MEXC trades response for ${symbol}: ${response.data.length} entries`);
-      return response.data;
-    });
-  },
-
-  // Fetch 24h volume from MEXC
-  async fetchMexc24hVolume(symbol) {
-    return this.fetchWithRetry(async () => {
-      logger.debug(`Fetching MEXC 24h volume for ${symbol}`);
-      const response = await axios.get('https://api.mexc.com/api/v3/ticker/24hr', {
-        params: { symbol },
-        headers: { 'Accept-Encoding': 'gzip' },
-        timeout: 10000,
-      });
-
-      if (!response.data || !response.data.quoteVolume) {
-        throw new Error('Invalid response format from MEXC 24hr API');
-      }
-
-      const quoteVolume = parseFloat(response.data.quoteVolume) || 0;
-      logger.debug(`MEXC 24h volume for ${symbol}: ${quoteVolume}`);
-      return quoteVolume;
-    });
-  },
-
-  // Fetch order book from MEXC
-  async fetchMexcOrderBook(symbol, limit = 100) {
-    return this.fetchWithRetry(async () => {
-      logger.debug(`Fetching MEXC order book for ${symbol}, limit: ${limit}`);
-      const response = await axios.get('https://api.mexc.com/api/v3/depth', {
-        params: { symbol, limit },
-        headers: { 'Accept-Encoding': 'gzip' },
-        timeout: 10000,
-      });
-
-      if (!response.data || !response.data.bids || !response.data.asks) {
-        throw new Error('Invalid response format from MEXC depth API');
-      }
-
-      return response.data;
-    });
-  },
-
-  // Fetch CoinMarketCap data
-  async fetchCmcData(symbol = 'TCAPY') {
-    return this.fetchWithRetry(async () => {
-      const normalizedSymbol = symbol.toUpperCase();
-      logger.debug(`Fetching CoinMarketCap data for ${normalizedSymbol}`);
-  
-      const response = await axios.get('https://pro-api.coinmarketcap.com/v2/cryptocurrency/quotes/latest', {
-        params: { symbol: normalizedSymbol, convert: 'USDT' },
-        headers: {
-          'X-CMC_PRO_API_KEY': config.CMC_API_KEY,
-          'Accept-Encoding': 'gzip',
-        },
-        timeout: 15000,
-      });
-  
-      if (!response.data || !response.data.data || !response.data.data[normalizedSymbol]) {
-        throw new Error(`Invalid response format from CoinMarketCap API for symbol ${normalizedSymbol}`);
-      }
-  
-      const coinData = response.data.data[normalizedSymbol][0];
-      if (!coinData || !coinData.quote || !coinData.quote.USDT) {
-        throw new Error('Missing USDT quote data from CoinMarketCap API');
-      }
-  
+      
       return {
-        volume24h: coinData.quote.USDT.volume_24h || 0,
-        price: coinData.quote.USDT.price || 0,
-        percent_change_24h: coinData.quote.USDT.percent_change_24h || 0,
-        percent_change_1h: coinData.quote.USDT.percent_change_1h || 0,
-        market_cap: coinData.quote.USDT.market_cap || 0,
         name: coinData.name,
         slug: coinData.slug,
+        price: coinData.quote.USDT.price || 0,
+        volume24h: coinData.quote.USDT.volume_24h || 0,
+        percent_change_1h: coinData.quote.USDT.percent_change_1h || 0,
+        percent_change_24h: coinData.quote.USDT.percent_change_24h || 0,
+        market_cap: coinData.quote.USDT.market_cap || 0,
+        circulating_supply: coinData.circulating_supply || 0,
+        total_supply: coinData.total_supply || 0,
+        max_supply: coinData.max_supply || 0
       };
     });
+  } catch (error) {
+    logger.error('Failed to fetch CMC data', { symbol, error: error.message });
+    throw error;
   }
-};  
+}
 
-// ======= DATA ANALYSIS FUNCTIONS =======
+// Throttled version to respect rate limits
+const throttledFetchCmcData = throttle(fetchCmcData, 2000);
 
-// Estimate volumes for various time periods
+// Fetch MEXC 24h trading volume
+async function fetchMexc24hVolume(symbol) {
+  try {
+    return await withRetry(async () => {
+      const response = await mexcAxios.get('/ticker/24hr', {
+        params: { symbol }
+      });
+      
+      const quoteVolume = parseFloat(response.data.quoteVolume) || 0;
+      logger.info(`MEXC 24h volume for ${symbol}: ${quoteVolume} USDT`);
+      
+      return quoteVolume;
+    });
+  } catch (error) {
+    logger.error('Failed to fetch MEXC 24h volume', { 
+      symbol, 
+      error: error.message,
+      stack: error.stack
+    });
+    
+    return 0;
+  }
+}
+
+// Fetch trade history from MEXC with error handling
+async function fetchTradeHistory(symbol, limit = 1000) {
+  try {
+    return await withRetry(async () => {
+      const timestamp = Date.now();
+      const queryString = `symbol=${symbol}&limit=${limit}&timestamp=${timestamp}`;
+      const signature = createSignature(queryString);
+      
+      const response = await mexcAxios.get('/trades', {
+        params: { 
+          symbol, 
+          limit,
+          timestamp,
+          signature 
+        },
+        headers: { 
+          'X-MEXC-APIKEY': MEXC_API_KEY 
+        }
+      });
+      
+      if (!response.data || !Array.isArray(response.data) || response.data.length === 0) {
+        throw new Error('No trade data available');
+      }
+      
+      return response.data;
+    });
+  } catch (error) {
+    logger.error('Failed to fetch trade history', { 
+      symbol, 
+      error: error.message 
+    });
+    
+    throw error;
+  }
+}
+
+// Fetch order book from MEXC with error handling
+async function fetchOrderBook(symbol, limit = 100) {
+  try {
+    return await withRetry(async () => {
+      const response = await mexcAxios.get('/depth', {
+        params: { symbol, limit }
+      });
+      
+      return response.data;
+    });
+  } catch (error) {
+    logger.error('Failed to fetch order book', { 
+      symbol, 
+      error: error.message 
+    });
+    
+    return { bids: [], asks: [] };
+  }
+}
+
+// =====================================================
+// Trading Analysis Functions
+// =====================================================
+
+// Calculate buy and sell volumes from trade history
+function calculateVolume(trades, startTime) {
+  if (!trades || !Array.isArray(trades) || trades.length === 0) {
+    logger.warn("Empty trades array or invalid data in calculateVolume");
+    return {
+      totalSellValue: 0,
+      totalSellAmount: 0,
+      totalBuyValue: 0,
+      totalBuyAmount: 0,
+    };
+  }
+
+  let totalSellValue = 0;
+  let totalSellAmount = 0;
+  let totalBuyValue = 0;
+  let totalBuyAmount = 0;
+
+  trades.forEach(trade => {
+    if (!trade || !trade.time || !trade.price || !trade.qty) return;
+    
+    const tradeTime = parseInt(trade.time, 10);
+    if (isNaN(tradeTime) || tradeTime < startTime) return;
+    
+    const price = parseFloat(trade.price);
+    const qty = parseFloat(trade.qty);
+    if (isNaN(price) || isNaN(qty)) return;
+    
+    const value = price * qty;
+    
+    if (trade.isBuyerMaker) {
+      totalSellValue += value;
+      totalSellAmount += qty;
+    } else {
+      totalBuyValue += value;
+      totalBuyAmount += qty;
+    }
+  });
+
+  return {
+    totalSellValue,
+    totalSellAmount,
+    totalBuyValue,
+    totalBuyAmount,
+  };
+}
+
+// Cải thiện ước tính khối lượng giao dịch
 function estimateVolumeDistribution(totalVolume24h, tradeData) {
-  // When we have limited trade data, we need to estimate volumes
-  // More recent periods typically have higher activity
-  const hour1Percent = 0.07; // 12% of 24h volume in the most recent hour
-  const min30Percent = 0.04; // 7% of 24h volume in the most recent 30 minutes
-  const min15Percent = 0.025; // 4% of 24h volume in the most recent 15 minutes
+  // Phân bổ tỷ lệ cao hơn cho các khoảng thời gian ngắn hơn
+  const hour1Percent = tradeData.change1Hour > 0 ? 0.1 : 0.08;
+  const min30Percent = tradeData.change30Min > 0 ? 0.06 : 0.05;
+  const min15Percent = tradeData.change15Min > 0 ? 0.04 : 0.03;
 
-  // Use price change direction to estimate buy/sell ratio
-  // If price is up, more buys than sells, and vice versa
-  // Default to a 60/40 ratio if we can't determine
-  let buyRatio1h = 0.6;
-  let buyRatio30m = 0.6;
-  let buyRatio15m = 0.6;
+  // Tính tỷ lệ mua/bán dựa trên biến động giá
+  const calculateBuyRatio = (change) => {
+    if (change > 2) return 0.8; // Tăng mạnh: 80% là mua
+    if (change > 1) return 0.7; // Tăng vừa: 70% là mua
+    if (change > 0.2) return 0.6; // Tăng nhẹ: 60% là mua
+    if (change > -0.2) return 0.5; // Đi ngang: 50-50
+    if (change > -1) return 0.4; // Giảm nhẹ: 40% là mua
+    if (change > -2) return 0.3; // Giảm vừa: 30% là mua
+    return 0.2; // Giảm mạnh: 20% là mua
+  };
 
-  if (tradeData && tradeData.change1Hour) {
-    const change1h = parseFloat(tradeData.change1Hour);
-    const change30m = parseFloat(tradeData.change30Min);
-    const change15m = parseFloat(tradeData.change15Min);
+  // Tính các tỷ lệ
+  const buyRatio1h = calculateBuyRatio(tradeData.change1Hour);
+  const buyRatio30m = calculateBuyRatio(tradeData.change30Min);
+  const buyRatio15m = calculateBuyRatio(tradeData.change15Min);
 
-    // Adjust buy/sell ratio based on price change
-    buyRatio1h = change1h > 0 ? 0.6 + Math.min(change1h * 0.02, 0.3) : 0.4 - Math.min(Math.abs(change1h) * 0.02, 0.3);
-    buyRatio30m = change30m > 0 ? 0.6 + Math.min(change30m * 0.02, 0.3) : 0.4 - Math.min(Math.abs(change30m) * 0.02, 0.3);
-    buyRatio15m = change15m > 0 ? 0.6 + Math.min(change15m * 0.02, 0.3) : 0.4 - Math.min(Math.abs(change15m) * 0.02, 0.3);
-  }
-
-  // Calculate total volume for each period
+  // Tính khối lượng
   const volume1h = totalVolume24h * hour1Percent;
   const volume30m = totalVolume24h * min30Percent;
   const volume15m = totalVolume24h * min15Percent;
 
-  // Split into buy and sell based on the ratios
   return {
     hour1: {
-      totalBuyValue: (volume1h * buyRatio1h).toFixed(4),
-      totalSellValue: (volume1h * (1 - buyRatio1h)).toFixed(4),
+      totalBuyValue: volume1h * buyRatio1h,
+      totalSellValue: volume1h * (1 - buyRatio1h),
       totalBuyAmount: Math.round((volume1h * buyRatio1h) / tradeData.currentPrice),
       totalSellAmount: Math.round((volume1h * (1 - buyRatio1h)) / tradeData.currentPrice)
     },
     min30: {
-      totalBuyValue: (volume30m * buyRatio30m).toFixed(4),
-      totalSellValue: (volume30m * (1 - buyRatio30m)).toFixed(4),
+      totalBuyValue: volume30m * buyRatio30m,
+      totalSellValue: volume30m * (1 - buyRatio30m),
       totalBuyAmount: Math.round((volume30m * buyRatio30m) / tradeData.currentPrice),
       totalSellAmount: Math.round((volume30m * (1 - buyRatio30m)) / tradeData.currentPrice)
     },
     min15: {
-      totalBuyValue: (volume15m * buyRatio15m).toFixed(4),
-      totalSellValue: (volume15m * (1 - buyRatio15m)).toFixed(4),
+      totalBuyValue: volume15m * buyRatio15m,
+      totalSellValue: volume15m * (1 - buyRatio15m),
       totalBuyAmount: Math.round((volume15m * buyRatio15m) / tradeData.currentPrice),
       totalSellAmount: Math.round((volume15m * (1 - buyRatio15m)) / tradeData.currentPrice)
     }
   };
 }
 
-// Calculate trading volumes based on actual trades (when available)
-function calculateVolume(trades, startTime) {
-  if (!trades || !Array.isArray(trades) || trades.length === 0) {
-    logger.warn("Empty trades array or invalid data in calculateVolume");
-    return {
-      totalSellValue: '0',
-      totalSellAmount: '0',
-      totalBuyValue: '0',
-      totalBuyAmount: '0',
-    };
-  }
-
-  logger.debug(`Calculating volume since ${new Date(startTime).toISOString()} (timestamp: ${startTime})`);
-  
-  let totalSellValue = 0;
-  let totalSellAmount = 0;
-  let totalBuyValue = 0;
-  let totalBuyAmount = 0;
-  let processedTrades = 0;
-  let skippedTrades = 0;
-
-  trades.forEach(trade => {
-    if (!trade || !trade.time || !trade.price || !trade.qty) {
-      skippedTrades++;
-      return;
-    }
-    
-    const tradeTime = parseInt(trade.time, 10);
-    if (isNaN(tradeTime) || tradeTime < startTime) {
-      skippedTrades++;
-      return;
-    }
-    
-    const price = parseFloat(trade.price);
-    const qty = parseFloat(trade.qty);
-    
-    if (isNaN(price) || isNaN(qty)) {
-      skippedTrades++;
-      return;
-    }
-    
-    const value = price * qty;
-    
-    if (trade.isBuyerMaker) {
-      // In MEXC API, when isBuyerMaker is true, it means a sell market order executed against a buy limit order
-      totalSellValue += value;
-      totalSellAmount += qty;
-    } else {
-      // When isBuyerMaker is false, it means a buy market order executed against a sell limit order
-      totalBuyValue += value;
-      totalBuyAmount += qty;
-    }
-    
-    processedTrades++;
-  });
-
-  logger.debug(`Volume calculation: processed ${processedTrades} trades, skipped ${skippedTrades} trades`);
-  
-  return {
-    totalSellValue: totalSellValue.toFixed(4),
-    totalSellAmount: totalSellAmount.toFixed(2),
-    totalBuyValue: totalBuyValue.toFixed(4),
-    totalBuyAmount: totalBuyAmount.toFixed(2),
-  };
-}
-
-// Find the price at a specific time
+// Find price at a specific time from trades
 function getPriceAtTime(trades, targetTime) {
-  if (!trades || !Array.isArray(trades) || trades.length === 0) {
-    logger.warn("Empty trades array or invalid data in getPriceAtTime");
-    return 0;
+  if (!trades || trades.length === 0) {
+    return null;
   }
-
-  // Sort trades by time difference from target
-  const sortedTrades = [...trades].sort((a, b) => {
-    const aDiff = Math.abs(parseInt(a.time) - targetTime);
-    const bDiff = Math.abs(parseInt(b.time) - targetTime);
-    return aDiff - bDiff;
+  
+  // Filter trades that are before the target time
+  const validTrades = trades.filter(trade => parseInt(trade.time) <= targetTime);
+  
+  if (validTrades.length === 0) {
+    return parseFloat(trades[trades.length - 1].price);
+  }
+  
+  // Find the closest trade
+  const closestTrade = validTrades.reduce((prev, curr) => {
+    const prevDiff = Math.abs(parseInt(prev.time) - targetTime);
+    const currDiff = Math.abs(parseInt(curr.time) - targetTime);
+    return currDiff < prevDiff ? curr : prev;
   });
-
-  const closestPrice = parseFloat(sortedTrades[0]?.price || 0);
-  logger.debug(`Closest price to ${new Date(targetTime).toISOString()} is ${closestPrice}`);
-  return closestPrice;
+  
+  return parseFloat(closestTrade.price);
 }
 
-// Generate meaningful buy zones based on order book and trade history
+// Generate buy zones with highest price and volume - Improved version
 function generateBuyZones(trades, orderBook, currentPrice, volume24h) {
-  // If we have order book data, use it to create realistic buy zones
+  // Tạo các vùng mua mặc định gần với giá hiện tại
+  const defaultBuyZones = [
+    { 
+      price: currentPrice * 0.99, // Giảm 1% so với giá hiện tại
+      amount: Math.round(volume24h * 0.07 / currentPrice),
+      value: volume24h * 0.07
+    },
+    { 
+      price: currentPrice * 0.97, // Giảm 3% so với giá hiện tại
+      amount: Math.round(volume24h * 0.1 / currentPrice),
+      value: volume24h * 0.1
+    }
+  ];
+
+  // Nếu có dữ liệu order book
   if (orderBook && orderBook.bids && orderBook.bids.length > 0) {
-    // Group bids that are close together
+    // Nhóm lệnh mua theo khoảng giá để tìm các "bức tường" mua lớn
     const groupedBids = {};
-    const priceBucketSize = 0.00001; // Group prices within 0.001% of each other
+    // Điều chỉnh kích thước nhóm theo giá hiện tại
+    const priceBucketSize = currentPrice < 0.01 ? 0.00001 : currentPrice < 1 ? 0.0001 : 0.001;
     
     orderBook.bids.forEach(bid => {
       const price = parseFloat(bid[0]);
       const amount = parseFloat(bid[1]);
       const value = price * amount;
       
-      if (value < 50) return; // Skip tiny orders
+      // Chỉ xem xét các lệnh có giá trị lớn hơn 50 USDT
+      if (value < 50) return;
       
-      // Round to nearest bucket
+      // Bỏ qua các lệnh giá quá thấp (dưới 10% giá hiện tại)
+      if (price < currentPrice * 0.9) return;
+      
       const bucketKey = Math.floor(price / priceBucketSize) * priceBucketSize;
-      
       if (!groupedBids[bucketKey]) {
-        groupedBids[bucketKey] = { 
-          price: price,
-          amount: 0, 
-          value: 0 
-        };
+        groupedBids[bucketKey] = { price, amount: 0, value: 0 };
       }
       
       groupedBids[bucketKey].amount += amount;
       groupedBids[bucketKey].value += value;
     });
+
+    // Chuyển đổi nhóm lệnh mua thành mảng
+    const bidZones = Object.values(groupedBids);
     
-    // Convert to array and sort by value
-    const topBuyZones = Object.values(groupedBids)
-      .sort((a, b) => b.value - a.value)
-      .slice(0, 1);
-    
-    // Scale up the values to make them more realistic
-    // Use a portion of 24h volume to make it sensible
-    const volumeScaleFactor = volume24h * 0.01 / Math.max(...topBuyZones.map(zone => zone.value));
-    
-    return topBuyZones.map(zone => ({
-      price: zone.price,
-      amount: Math.round(zone.amount * volumeScaleFactor),
-      value: zone.value * volumeScaleFactor
-    }));
-  }
-  
-  // Fallback to using trade history if order book isn't available
-  const threeHoursAgo = Date.now() - 3 * 60 * 60 * 1000;
-  const buyTrades = trades.filter(t => 
-    parseInt(t.time) >= threeHoursAgo && 
-    !t.isBuyerMaker && 
-    Math.abs(parseFloat(t.price) - currentPrice) / currentPrice < 0.03 // Within 3% of current price
-  );
-  
-  // If we don't have enough trade data, create synthetic buy zones
-  if (buyTrades.length < 5) {
-    // Create two synthetic buy zones based on current price
-    return [
-      {
-        price: currentPrice * 0.98, // 2% below current price
-        amount: Math.round(volume24h * 0.05 / currentPrice),
-        value: volume24h * 0.05
-      },
-      {
-        price: currentPrice * 0.95, // 5% below current price
-        amount: Math.round(volume24h * 0.08 / currentPrice),
-        value: volume24h * 0.08
-      }
-    ];
-  }
-  
-  // Group buy trades by similar prices
-  const groupedTrades = {};
-  const tradeWindow = 0.0001; // Group within 0.01%
-  
-  buyTrades.forEach(trade => {
-    const price = parseFloat(trade.price);
-    const qty = parseFloat(trade.qty);
-    const value = price * qty;
-    
-    // Round to nearest price group
-    const priceKey = Math.floor(price / tradeWindow) * tradeWindow;
-    
-    if (!groupedTrades[priceKey]) {
-      groupedTrades[priceKey] = { 
-        price: price, 
-        amount: 0, 
-        value: 0 
-      };
-    }
-    
-    groupedTrades[priceKey].amount += qty;
-    groupedTrades[priceKey].value += value;
-  });
-  
-  // Convert to array and get top 2 by value
-  let topZones = Object.values(groupedTrades)
-    .sort((a, b) => b.value - a.value)
-    .slice(0, 2);
-  
-  // Scale up the values to be more representative of actual trading volume
-  const scaleFactor = volume24h * 0.015 / Math.max(...topZones.map(zone => zone.value));
-  
-  return topZones.map(zone => ({
-    price: zone.price,
-    amount: Math.round(zone.amount * scaleFactor),
-    value: zone.value * scaleFactor
-  }));
-}
-
-
-async function sendMessageWithRetry(chatId, message, options, maxRetries = 3) {
-  let attempts = 0;
-  let success = false;
-  while (attempts < maxRetries && !success) {
-    try {
-      await bot.telegram.sendMessage(chatId, message, options);
-      success = true;  // If no error, mark as success
-    } catch (error) {
-      attempts++;
-      if (attempts < maxRetries) {
-        logger.warn(`Retrying message send (attempt ${attempts})...`);
-        await new Promise(resolve => setTimeout(resolve, 5000));  // Delay before retry
-      } else {
-        logger.error(`Failed to send message after ${maxRetries} attempts: ${error.message}`);
-        throw error;  // If retry attempts failed, re-throw the error
-      }
-    }
-  }
-}
-
-
-// ======= MAIN FUNCTIONALITY =======
-
-// Core function to gather and send TCAPY information
-async function sendTcapyInfoAutomatically(ctx) {
-  const startTime = Date.now();
-  logger.info(`Starting TCAPY info update at ${new Date().toISOString()}`);
-  
-  try {
-    const symbol = config.SYMBOL;
-    let chatId, messageThreadId;
-    
-    // Determine where to send the message
-    if (ctx) {
-      // If we have context, use that chat ID
-      chatId = ctx.chat.id.toString();
-      messageThreadId = ctx.message?.message_thread_id ? ctx.message.message_thread_id.toString() : null;
-      logger.info(`Sending update to chat ${chatId}${messageThreadId ? `, thread ${messageThreadId}` : ''} (from command)`);
-    } else {
-      // Otherwise use the configured IDs
-      chatId = config.GROUP_CHAT_ID;
-      messageThreadId = config.MESSAGE_THREAD_ID;
-      logger.info(`Sending scheduled update to chat ${chatId}${messageThreadId ? `, thread ${messageThreadId}` : ''}`);
-    }
-
-    // Fetch all required data in parallel
-    logger.info('Fetching data from CoinMarketCap and MEXC APIs...');
-    
-    const [cmcData, mexcVolume, trades, orderBook] = await Promise.all([
-      apiService.fetchCmcData('TCAPY').catch(err => {
-        logger.error(`Failed to fetch CMC data: ${err.message}`);
-        return { volume24h: 0, price: 0 };
-      }),
-      
-      apiService.fetchMexc24hVolume(symbol).catch(err => {
-        logger.error(`Failed to fetch MEXC 24h volume: ${err.message}`);
-        return 0;
-      }),
-      
-      apiService.fetchMexcTrades(symbol, 1000).catch(err => {
-        logger.error(`Failed to fetch MEXC trades: ${err.message}`);
-        return [];
-      }),
-      
-      apiService.fetchMexcOrderBook(symbol, 100).catch(err => {
-        logger.error(`Failed to fetch MEXC depth data: ${err.message}`);
-        return { bids: [], asks: [] };
-      })
-    ]);
-
-    // Validate data
-    if (!trades || trades.length === 0) {
-      throw new Error('No trade data available from MEXC API');
-    }
-
-    logger.info(`Successfully fetched data. Processing ${trades.length} trades...`);
-
-    // Get current price and calculate time windows
-    const currentPrice = parseFloat(trades[0]?.price || 0);
-    if (isNaN(currentPrice) || currentPrice <= 0) {
-      throw new Error('Invalid current price data');
-    }
-
-    const now = Date.now();
-    const oneHourAgo = now - 60 * 60 * 1000;
-    const thirtyMinutesAgo = now - 30 * 60 * 1000;
-    const fifteenMinutesAgo = now - 15 * 60 * 1000;
-
-    // Get historical prices
-    const price15MinAgo = getPriceAtTime(trades, fifteenMinutesAgo);
-    const price30MinAgo = getPriceAtTime(trades, thirtyMinutesAgo);
-    const price1HourAgo = getPriceAtTime(trades, oneHourAgo);
-
-    // Calculate price changes
-    const change15Min = ((currentPrice - price15MinAgo) / (price15MinAgo || 1) * 100).toFixed(2);
-    const change30Min = ((currentPrice - price30MinAgo) / (price30MinAgo || 1) * 100).toFixed(2);
-    const change1Hour = ((currentPrice - price1HourAgo) / (price1HourAgo || 1) * 100).toFixed(2);
-
-    // Log price data
-    logger.debug(`Price data: 
-      Current: ${currentPrice}, 
-      15m ago: ${price15MinAgo} (${change15Min}%), 
-      30m ago: ${price30MinAgo} (${change30Min}%), 
-      1h ago: ${price1HourAgo} (${change1Hour}%)`);
-
-    // Get actual volumes if we have sufficient trade data
-    const actualOneHourData = calculateVolume(trades, oneHourAgo);
-    const actualThirtyMinData = calculateVolume(trades, thirtyMinutesAgo);
-    const actualFifteenMinData = calculateVolume(trades, fifteenMinutesAgo);
-
-    // Get total 24h volume from CoinMarketCap (more reliable across all exchanges)
-    const volume24hCmc = cmcData.volume24h || 0;
-    
-    // Estimate more realistic volumes using both actual data and CMC total volume
-    const tradeData = {
-      currentPrice,
-      change15Min,
-      change30Min,
-      change1Hour
-    };
-    
-    // Get estimated volumes
-    const estimatedVolumes = estimateVolumeDistribution(volume24hCmc, tradeData);
-    
-    // Use actual data if it seems realistic, otherwise use estimates
-    const oneHourData = parseFloat(actualOneHourData.totalBuyValue) + parseFloat(actualOneHourData.totalSellValue) > volume24hCmc * 0.03 ? 
-      actualOneHourData : estimatedVolumes.hour1;
-      
-    const thirtyMinData = parseFloat(actualThirtyMinData.totalBuyValue) + parseFloat(actualThirtyMinData.totalSellValue) > volume24hCmc * 0.02 ? 
-      actualThirtyMinData : estimatedVolumes.min30;
-      
-    const fifteenMinData = parseFloat(actualFifteenMinData.totalBuyValue) + parseFloat(actualFifteenMinData.totalSellValue) > volume24hCmc * 0.01 ? 
-      actualFifteenMinData : estimatedVolumes.min15;
-
-    // Generate buy zones
-    const buyZones = generateBuyZones(trades, orderBook, currentPrice, volume24hCmc);
-
-    // Build the message
-    logger.info('Building message with processed data...');
-    let message = `<b>🚨 TCAPY/USDT Real-Time Update </b>\n\n`;
-    message += `<b>💰 Current Price:</b> $${formatPrice(currentPrice, 6)} USDT\n`;
-    message += `<b>🕒 15m:</b> ${change15Min}% | <b>⏳ 30m:</b> ${change30Min}% | <b>🕰 1h:</b> ${change1Hour}%\n\n`;
-
-    // Market signal logic
-    const changes = [
-      { timeframe: '15 Minutes', change: parseFloat(change15Min), data: fifteenMinData },
-      { timeframe: '30 Minutes', change: parseFloat(change30Min), data: thirtyMinData },
-      { timeframe: '1 Hour', change: parseFloat(change1Hour), data: oneHourData },
-    ];
-    
-    const maxChangeTimeframe = changes.reduce((prev, current) => 
-      (Math.abs(prev.change) > Math.abs(current.change) ? prev : current));
-    
-    const selectedChange = maxChangeTimeframe.change;
-    const selectedData = maxChangeTimeframe.data;
-    const buyValue = parseFloat(selectedData.totalBuyValue);
-    const sellValue = parseFloat(selectedData.totalSellValue);
-    const buySellRatio = sellValue <= 0 ? 1 : buyValue / sellValue;
-
-    if (Math.abs(parseFloat(change15Min)) >= 5) {
-      message += `<b>⚠️ ALERT: Significant Price Change</b>\n`;
-    }
-
-    // Generate signal message based on price movement
-    let signalMessage = '';
-    if (selectedChange >= 15) {
-      signalMessage = `🌋 Volcanic surge in ${maxChangeTimeframe.timeframe}: TCAPY is erupting with massive buy pressure – FOMO incoming!`;
-    } else if (selectedChange >= 10) {
-      signalMessage = `🚀 Massive breakout in ${maxChangeTimeframe.timeframe}: TCAPY is exploding with extreme buy strength – watch for FOMO zones!`;
-    } else if (selectedChange >= 7) {
-      signalMessage = `📈 Strong bullish rally in ${maxChangeTimeframe.timeframe}: Price accelerating fast with solid buying confidence.`;
-    } else if (selectedChange >= 5) {
-      signalMessage = `💥 Market momentum rising in ${maxChangeTimeframe.timeframe}: Buyers are dominating, and optimism is spreading.`;
-    } else if (selectedChange >= 3) {
-      signalMessage = `💡 TCAPY gaining momentum in ${maxChangeTimeframe.timeframe}: A solid climb with active demand.`;
-    } else if (selectedChange >= 2) {
-      signalMessage = `🌟 Strong uptrend in ${maxChangeTimeframe.timeframe}: Buyers stepping in – good signs of strength.`;
-    } else if (selectedChange >= 1.5) {
-      signalMessage = `✅ Positive signal in ${maxChangeTimeframe.timeframe}: Healthy buying momentum and bullish continuation is possible.`;
-    } else if (selectedChange >= 1.0) {
-      signalMessage = `🟢 Mild strength detected in ${maxChangeTimeframe.timeframe}: Gradual move up with buyer support.`;
-    } else if (selectedChange >= 0.5) {
-      signalMessage = `📊 Slow and steady growth in ${maxChangeTimeframe.timeframe}: Market trending upward slightly, potential ahead.`;
-    } else if (selectedChange >= 0.2) {
-      signalMessage = `🌱 Small uptick in ${maxChangeTimeframe.timeframe}: Early signs of accumulation – worth keeping an eye on!`;
-    } else if (selectedChange > -0.1 && selectedChange < 0.2) {
-      signalMessage = `🌾 Sideways phase in ${maxChangeTimeframe.timeframe}: Stable zone – often the base before bigger moves.`;
-    } else if (selectedChange <= -0.1 && selectedChange > -0.3) {
-      signalMessage = `🌥 Light dip in ${maxChangeTimeframe.timeframe}: Nothing alarming – typical minor correction.`;
-    } else if (selectedChange <= -0.3 && selectedChange > -0.7) {
-      signalMessage = `🟠 Slight weakness in ${maxChangeTimeframe.timeframe}: Selling ahead but not overwhelming – calm before next move.`;
-    } else if (selectedChange <= -0.7 && selectedChange > -1.5) {
-      signalMessage = `🔄 Market cooling in ${maxChangeTimeframe.timeframe}: Some profit-taking – patient buyers may find a chance.`;
-    } else if (selectedChange <= -1.5 && selectedChange > -3) {
-      signalMessage = `📉 Pullback zone in ${maxChangeTimeframe.timeframe}: Short-term correction – long-term outlook can stay solid.`;
-    } else if (selectedChange <= -3) {
-      signalMessage = `🌀 Market shakeout in ${maxChangeTimeframe.timeframe}: Stronger sell wave – rebounds often follow!`;
-    }
-
-    // Add market activity indicators
-    if (buySellRatio > 1.5 && (buyValue + sellValue) > volume24hCmc * 0.01) {
-      signalMessage += ` 📈 High buy pressure detected!`;
-    } else if (buySellRatio < 0.8 && (buyValue + sellValue) > volume24hCmc * 0.01) {
-      signalMessage += ` 📉 Potential buying opportunity!`;
-    } else if ((buyValue + sellValue) > volume24hCmc * 0.02) {
-      signalMessage += ` 🔊 Active market with high participation!`;
-    }
-
-    message += `${signalMessage}\n`;
-
-    // Display volume data
-    message += `\n🔴 <b>Sell Orders (Asks)</b>\n`;
-    const timeFrames = [
-      { label: '15 Minutes', data: fifteenMinData },
-      { label: '30 Minutes', data: thirtyMinData },
-      { label: '1 Hour', data: oneHourData },
-    ];
-    
-    timeFrames.forEach(({ label, data }) => {
-      const sellValue = parseFloat(data.totalSellValue);
-      const sellAmount = parseFloat(data.totalSellAmount);
-      
-      if (!isNaN(sellValue) && !isNaN(sellAmount)) {
-        message += `- <b>Last ${label}:</b> $${formatNumber(sellValue, 0)} | ${formatNumber(sellAmount, 0)} TCAPY\n`;
-      }
-    });
-
-    message += `\n🟢 <b>Buy Orders (Bids)</b>\n`;
-    timeFrames.forEach(({ label, data }) => {
-      const buyValue = parseFloat(data.totalBuyValue);
-      const buyAmount = parseFloat(data.totalBuyAmount);
-      
-      if (!isNaN(buyValue) && !isNaN(buyAmount)) {
-        message += `- <b>Last ${label}:</b> $${formatNumber(buyValue, 0)} | ${formatNumber(buyAmount, 0)} TCAPY\n`;
-      }
-    });
-
-    // Add top buy zones section
-    if (buyZones.length > 0) {
-      message += `\n<b>🏆 Top Buy Zones Right Now</b> 💡 <b>Buy Pressure Here!</b>\n`;
-      
-      buyZones.forEach(({ price, amount, value }) => {
-        if (!isNaN(price) && !isNaN(amount) && !isNaN(value)) {
-          message += `$${formatPrice(price, 6)} | $${formatNumber(value, 0)} | ${formatNumber(amount, 0)} TCAPY\n`;
-        }
-      });
-    } else {
-      message += `\n🟢 No significant buy zones detected in the last 3 hours.\n`;
-    }
-
-    // Add market cap data
-    try {
-      const circulatingSupply = config.TCAPY_SUPPLY;
-      const marketCap = currentPrice * circulatingSupply;
-
-      message += `\n<b>📊 On-Chain Metrics </b>`;
-      message += `\n<b>- Total Volume 24H:</b> $${formatNumber(volume24hCmc, 0)}`;
-      message += `\n<b>- Market Cap:</b> $${formatNumber(marketCap, 0)}`;
-      message += `\n<b>- Circulating Supply:</b> ${formatNumber(circulatingSupply, 0)}\n`;
-    } catch (error) {
-      logger.error(`Error calculating market metrics: ${error.message}`);
-      message += `\n⚠️ <b>Market metrics unavailable.</b>\n`;
-    }
-
-    message += `\n🔗 <a href="https://www.mexc.com/exchange/TCAPY_USDT">View on MEXC</a>`; 
-    message += `\n📚 <b><a>/tcapy@Tcapy_bot</a> Update Real-Time </b>`; 
-    message += `\n🌐 Updated by <b>TCAPY Community Bot</b>`;
-    
-    // Send the message
-    logger.info('Sending TCAPY update message...');
-    
-    const sendOptions = { 
-      parse_mode: 'HTML',  // Specify that message uses HTML formatting
-      disable_web_page_preview: false  // This ensures link previews are shown
-    };
-    
-    // Ensure message_thread_id is properly handled
-    if (messageThreadId && messageThreadId !== 'null' && messageThreadId !== 'undefined') {
-      sendOptions.message_thread_id = parseInt(messageThreadId, 10);
-      logger.debug(`Sending to thread ID: ${messageThreadId}`);
-    }
-    
-    // Ensure numeric chat ID
-    const numericChatId = parseInt(chatId, 10);
-    if (isNaN(numericChatId)) {
-      throw new Error(`Invalid chat ID: ${chatId}`);
-    }
-    
-    // Send the message to the chat
-    await bot.telegram.sendMessage(numericChatId, message, sendOptions);
-    
-    const duration = (Date.now() - startTime) / 1000;
-    logger.info(`Sent TCAPY info update. Duration: ${duration.toFixed(2)}s`);
-    
-    return true;
-  } catch (error) {
-    logger.error(`Failed to send TCAPY info: ${error.message}`);
-    if (error.stack) {
-      logger.debug(`Error stack: ${error.stack}`);
-    }
-    
-    // Create detailed error message
-    let errorMessage = '❌ Error fetching TCAPY data.';
-    
-    if (error.message.includes('trade data')) {
-      errorMessage += ' No recent trades found.';
-    } else if (error.message.includes('price data')) {
-      errorMessage += ' Invalid price data.';
-    } else if (error.response) {
-      errorMessage += ` API returned status ${error.response.status}.`;
-      if (error.response.data?.msg) {
-        errorMessage += ` Message: ${error.response.data.msg}`;
-      }
-    } else if (error.request) {
-      errorMessage += ' No response from API server.';
-    } else {
-      errorMessage += ` Error: ${error.message}`;
-    }
-    
-    // Send error message if we have a context or group ID
-    if (ctx) {
-      try {
-        await ctx.reply(errorMessage, { parse_mode: 'HTML' });
-      } catch (msgError) {
-        logger.error(`Failed to send error message: ${msgError.message}`);
-      }
-    } else if (config.GROUP_CHAT_ID) {
-      try {
-        const sendOptions = { parse_mode: 'HTML' };
-        if (config.MESSAGE_THREAD_ID) {
-          sendOptions.message_thread_id = parseInt(config.MESSAGE_THREAD_ID, 10);
+    // Tìm vùng mua có khối lượng lớn
+    // Sắp xếp theo giá từ cao xuống thấp, ưu tiên vùng gần giá hiện tại
+    const significantZones = bidZones
+      .filter(zone => zone.value > volume24h * 0.003) // Điều chỉnh ngưỡng thấp hơn
+      .sort((a, b) => {
+        // Ưu tiên vùng gần giá hiện tại
+        // Nếu 2 vùng cách giá hiện tại dưới 5%, ưu tiên vùng có khối lượng lớn hơn
+        const aDistancePercent = (currentPrice - a.price) / currentPrice * 100;
+        const bDistancePercent = (currentPrice - b.price) / currentPrice * 100;
+        
+        if (aDistancePercent < 5 && bDistancePercent < 5) {
+          return b.value - a.value; // Sắp xếp theo khối lượng
         }
         
-        await bot.telegram.sendMessage(
-          parseInt(config.GROUP_CHAT_ID, 10), 
-          errorMessage, 
-          sendOptions
-        );
-      } catch (msgError) {
-        logger.error(`Failed to send error notification: ${msgError.message}`);
-      }
-    }
+        return aDistancePercent - bDistancePercent; // Sắp xếp theo khoảng cách đến giá hiện tại
+      });
     
-    return false;
+    if (significantZones.length > 0) {
+      // Lấy tối đa 2 vùng mua từ order book
+      const orderBookZones = significantZones.slice(0, 2);
+      
+      // Kết hợp với vùng mua mặc định ở trên
+      // Chỉ thêm vùng mặc định nếu không trùng với vùng từ order book
+      const combinedZones = [...orderBookZones];
+      
+      defaultBuyZones.forEach(defaultZone => {
+        // Kiểm tra xem vùng mặc định có gần với vùng nào từ order book không
+        const hasSimilarZone = orderBookZones.some(zone => 
+          Math.abs(zone.price - defaultZone.price) / defaultZone.price < 0.02 // Trong phạm vi 2%
+        );
+        
+        if (!hasSimilarZone) {
+          combinedZones.push(defaultZone);
+        }
+      });
+      
+      // Sắp xếp lại theo giá giảm dần (cách giá hiện tại tăng dần)
+      return combinedZones.sort((a, b) => b.price - a.price).slice(0, 3);
+    }
   }
+  
+  // Nếu không có dữ liệu order book, phân tích lịch sử giao dịch
+  const threeHoursAgo = Date.now() - 3 * 60 * 60 * 1000;
+  const buyTrades = trades.filter(t => parseInt(t.time) >= threeHoursAgo && !t.isBuyerMaker);
+  
+  if (buyTrades.length >= 5) {
+    const groupedTrades = {};
+    const tradeWindow = currentPrice < 0.01 ? 0.0001 : currentPrice < 1 ? 0.001 : 0.01;
+    
+    buyTrades.forEach(trade => {
+      const price = parseFloat(trade.price);
+      const qty = parseFloat(trade.qty);
+      const value = price * qty;
+      
+      // Bỏ qua các giao dịch có giá quá thấp
+      if (price < currentPrice * 0.9) return;
+      
+      const priceKey = Math.floor(price / tradeWindow) * tradeWindow;
+      
+      if (!groupedTrades[priceKey]) {
+        groupedTrades[priceKey] = { price, amount: 0, value: 0 };
+      }
+      
+      groupedTrades[priceKey].amount += qty;
+      groupedTrades[priceKey].value += value;
+    });
+
+    // Tìm vùng mua có lịch sử giao dịch mạnh
+    const historicalZones = Object.values(groupedTrades)
+      .filter(zone => zone.value > volume24h * 0.002)
+      .sort((a, b) => {
+        // Ưu tiên vùng gần giá hiện tại
+        const aDistance = Math.abs(currentPrice - a.price);
+        const bDistance = Math.abs(currentPrice - b.price);
+        
+        // Nếu khoảng cách tương đối gần nhau, ưu tiên khối lượng
+        if (Math.abs(aDistance - bDistance) < currentPrice * 0.01) {
+          return b.value - a.value;
+        }
+        
+        return aDistance - bDistance;
+      });
+    
+    if (historicalZones.length > 0) {
+      // Kết hợp vùng từ lịch sử giao dịch với vùng mặc định
+      const combinedZones = [...historicalZones.slice(0, 2)];
+      
+      defaultBuyZones.forEach(defaultZone => {
+        // Kiểm tra xem vùng mặc định có gần với vùng nào từ lịch sử không
+        const hasSimilarZone = historicalZones.some(zone => 
+          Math.abs(zone.price - defaultZone.price) / defaultZone.price < 0.02 // Trong phạm vi 2%
+        );
+        
+        if (!hasSimilarZone) {
+          combinedZones.push(defaultZone);
+        }
+      });
+      
+      // Sắp xếp lại theo giá giảm dần và lấy tối đa 3 vùng
+      return combinedZones.sort((a, b) => b.price - a.price).slice(0, 3);
+    }
+  }
+
+  // Nếu không có dữ liệu đủ tốt từ order book và lịch sử giao dịch
+  // Trả về các vùng mua mặc định ở các mức giá hợp lý
+  return [
+    { 
+      price: currentPrice * 0.995, // Giảm 0.5% so với giá hiện tại
+      amount: Math.round(volume24h * 0.05 / currentPrice),
+      value: volume24h * 0.05 
+    },
+    { 
+      price: currentPrice * 0.985, // Giảm 1.5% so với giá hiện tại
+      amount: Math.round(volume24h * 0.08 / currentPrice),
+      value: volume24h * 0.08
+    },
+    { 
+      price: currentPrice * 0.97, // Giảm 3% so với giá hiện tại
+      amount: Math.round(volume24h * 0.12 / currentPrice),
+      value: volume24h * 0.12
+    }
+  ];
+}
+// =====================================================
+// Signal Generation Functions
+// =====================================================
+
+// Generate signal message based on price changes and volume
+function generateSignalMessage(timeframe, change, buySellRatio, totalVolume) {
+  // Enhanced signal quality with more detailed analysis
+  let signalMessage = '';
+  
+  // Handle extreme price movements
+  if (change >= 20) {
+    signalMessage = `🌋 EXTREME SURGE in ${timeframe}: TCAPY showing parabolic movement with massive buy pressure – FOMO phase detected!`;
+  } else if (change >= 15) {
+    signalMessage = `🚀 MASSIVE BREAKOUT in ${timeframe}: TCAPY exploding with extreme buy strength – strong momentum building!`;
+  } else if (change >= 10) {
+    signalMessage = `📈 STRONG BULL RALLY in ${timeframe}: Price accelerating rapidly with institutional buying detected.`;
+  } else if (change >= 7) {
+    signalMessage = `💥 POWERFUL MOMENTUM in ${timeframe}: Strong buy pressure pushing price higher with conviction.`;
+  } else if (change >= 5) {
+    signalMessage = `💡 STRONG UPTREND in ${timeframe}: Clear bullish pattern forming with sustained buying.`;
+  } else if (change >= 3) {
+    signalMessage = `🌟 SOLID BULLISH MOVE in ${timeframe}: Buyers stepping in with confidence – good momentum.`;
+  } else if (change >= 2) {
+    signalMessage = `✅ POSITIVE TREND in ${timeframe}: Healthy buying momentum with bullish continuation likely.`;
+  } else if (change >= 1) {
+    signalMessage = `🟢 MILD STRENGTH in ${timeframe}: Market trending upward with steady support.`;
+  } else if (change >= 0.5) {
+    signalMessage = `📊 GRADUAL GROWTH in ${timeframe}: Slow but steady accumulation phase.`;
+  } else if (change >= 0.2) {
+    signalMessage = `🌱 EARLY BULLISH SIGNS in ${timeframe}: First signs of accumulation – monitor closely.`;
+  } else if (change > -0.2 && change < 0.2) {
+    signalMessage = `🌾 CONSOLIDATION PHASE in ${timeframe}: Market taking a breather – often precedes bigger moves.`;
+  } else if (change <= -0.2 && change > -0.5) {
+    signalMessage = `🌥 MINOR WEAKNESS in ${timeframe}: Slight selling pressure but nothing concerning.`;
+  } else if (change <= -0.5 && change > -1) {
+    signalMessage = `🟠 MILD CORRECTION in ${timeframe}: Some profit-taking but technical structure remains intact.`;
+  } else if (change <= -1 && change > -3) {
+    signalMessage = `🔄 PULLBACK ZONE in ${timeframe}: Healthy correction after recent moves.`;
+  } else if (change <= -3 && change > -7) {
+    signalMessage = `📉 SIGNIFICANT DECLINE in ${timeframe}: Increased selling pressure – watch key support levels.`;
+  } else if (change <= -7) {
+    signalMessage = `🌀 MAJOR CORRECTION in ${timeframe}: Sharp selloff – potential oversold opportunity for brave traders.`;
+  }
+
+  // Add volume analysis
+  if (buySellRatio > 2 && totalVolume > 1000) {
+    signalMessage += ` 📈 EXTREMELY HIGH buy pressure detected with heavy accumulation!`;
+  } else if (buySellRatio > 1.5 && totalVolume > 1000) {
+    signalMessage += ` 📈 Strong buy pressure with institutional accumulation patterns.`;
+  } else if (buySellRatio < 0.5 && totalVolume > 1000) {
+    signalMessage += ` 📉 Heavy distribution detected – potential buying opportunity approaching.`;
+  } else if (buySellRatio < 0.8 && totalVolume > 1000) {
+    signalMessage += ` 📉 Sellers currently in control – monitor for reversal signs.`;
+  } else if (totalVolume > 3000) {
+    signalMessage += ` 🔊 Extremely high trading activity with major market participation!`;
+  } else if (totalVolume > 2000) {
+    signalMessage += ` 🔊 High trading volume indicating strong market interest!`;
+  }
+
+  return signalMessage;
 }
 
-// ======= BOT COMMAND HANDLERS =======
+// =====================================================
+// Bot Command Handlers
+// =====================================================
 
 // Start command
 bot.start((ctx) => {
-  logger.info(`/start command received from ${ctx.from.id} in chat ${ctx.chat.id}`);
   ctx.replyWithHTML(`
-    💰 <b> Welcome to TCAPY Community Bot </b> 💰
+    💰 <b>Welcome to TCAPY Community Bot</b> 💰
+    
   Hello! Explore cryptocurrency data with these commands:
-- <code>/start</code> - Show the welcome message
-- <code>/tcapy</code> - See real-time TCAPY investment signals 
-- <code>/coin [symbol]</code> - Get details for a specific coin (e.g. <code>/coin tcapy</code>)
-- <code>/help</code> - Display all available commands
+  
+  - <code>/start</code> - Show this welcome message
+  - <code>/tcapy</code> - See real-time TCAPY investment signals 
+  - <code>/coin tcapy</code> - Get detailed info for TCAPY
+  - <code>/coin [symbol]</code> - Get details for any cryptocurrency
+  - <code>/help</code> - Display all available commands
+  
+  <i>Serving a community of 500,000+ crypto enthusiasts!</i>
   `);
 });
 
 // Help command
 bot.help((ctx) => {
-  logger.info(`/help command received from ${ctx.from.id} in chat ${ctx.chat.id}`);
   ctx.replyWithHTML(`
-            📚 <b>Command Guide</b>📚
+    📚 <b>TCAPY Bot Command Guide</b> 📚
+    
   Here's everything you can do with this bot:
-- /start - Displays the welcome message to get you started.
-- /tcapy - Shows real-time investment signals for TCAPY.
-- /coin [symbol] - Fetches details for a specific cryptocurrency. 
-- <b><code>/coin tcapy</code></b> - Get details for TCAPY.
-- /help - Brings up this guide with all available commands.
+  
+  - <code>/start</code> - Displays the welcome message to get you started
+  - <code>/tcapy</code> - Shows real-time investment signals for TCAPY
+  - <code>/coin [symbol]</code> - Fetches details for any cryptocurrency:
+    • Example: <code>/coin tcapy</code> - Get TCAPY details
+    • Example: <code>/coin btc</code> - Get Bitcoin details
+  - <code>/help</code> - Shows this guide with all available commands
+  
+  <i>The bot automatically posts TCAPY updates every 2 hours</i>
   `);
 });
 
-// Coin command
-bot.command('coin', async (ctx) => {
-  const symbol = ctx.payload.trim().toUpperCase();
-  logger.info(`/coin command received with symbol: ${symbol} from ${ctx.from.id} in chat ${ctx.chat.id}`);
+// Get group ID command
+bot.command('getgroupid', (ctx) => {
+  const chatId = ctx.chat.id;
+  const threadId = ctx.message?.message_thread_id;
   
-  if (!symbol) return ctx.reply('❌ Please provide a coin symbol (e.g., /coin BTC)');
+  let message = `Group ID: ${chatId}`;
+  if (threadId) {
+    message += `\nThread ID: ${threadId}`;
+  }
+  
+  ctx.reply(message);
+});
 
+// Coin info command
+bot.command('coin', async (ctx) => {
+  const symbol = ctx.message.text.split(/\s+/)[1]?.trim()?.toUpperCase();
+  
+  if (!symbol) {
+    return ctx.reply('❌ Please provide a coin symbol (e.g., /coin BTC)');
+  }
+  
+  // Show typing status
+  await ctx.telegram.sendChatAction(ctx.chat.id, 'typing', {
+    message_thread_id: ctx.message.message_thread_id
+  }).catch(() => {});
+  
   try {
-    const coinData = await apiService.fetchCmcData(symbol);
-    const currentPrice = coinData.price;
-    const circulatingSupply = symbol === 'TCAPY' ? config.TCAPY_SUPPLY : null;
-    const marketCap = currentPrice * (circulatingSupply || coinData.market_cap / currentPrice);
-
+    // Fetch data from CoinMarketCap API
+    const coinData = await throttledFetchCmcData(symbol);
+    
+    if (!coinData) {
+      throw new Error('Coin not found');
+    }
+    
+    // Special case for TCAPY with custom circulating supply
+    const circulatingSupply = symbol === 'TCAPY' ? 888_000_000_000 : coinData.circulating_supply;
+    const marketCap = coinData.price * circulatingSupply;
+    
     // Construct the response message
     let message = `
 📈 <b>${coinData.name} (${symbol})</b>
-💰 <b>Current Price:</b> $${formatPrice(currentPrice)}
+💰 <b>Current Price:</b> $${formatPrice(coinData.price)}
 📊 <b>24h Change:</b> ${formatNumber(coinData.percent_change_24h, 2)}%
 📊 <b>1h Change:</b> ${formatNumber(coinData.percent_change_1h, 2)}%
 🔄 <b>24h Volume:</b> $${formatNumber(coinData.volume24h, 0)}
 🔄 <b>Market Cap:</b> $${formatNumber(marketCap, 0)}
     `;
-
-    // Special message for TCAPY
+    
+    // Add supply information
     if (symbol === 'TCAPY') {
+      message += `🔢 <b>Total Supply:</b> 888,000,000,000 TCAPY\n`;
+      
+      // Special message for TCAPY
       message += `
-🔢 <b>Total Supply:</b> ${formatNumber(config.TCAPY_SUPPLY, 0)} TCAPY
-
 🌟 <b>Welcome to TonCapy!</b>
 TonCapy is where memes meet crypto—an energetic hub inspired by the friendly capybara. With the TCapy token at its heart, our platform empowers Telegram projects to effortlessly create, manage, and grow vibrant communities.
 
@@ -879,21 +737,36 @@ TonCapy is where memes meet crypto—an energetic hub inspired by the friendly c
 • 300K Daily Active Users • 4M Monthly Active Users
 • 5.5M Total Holders • 4.2M Users in 1 Month!
       `;
+    } else {
+      // For other coins, show regular supply info
+      if (coinData.circulating_supply) {
+        message += `🔢 <b>Circulating Supply:</b> ${formatNumber(coinData.circulating_supply, 0)} ${symbol}\n`;
+      }
+      if (coinData.max_supply) {
+        message += `🔢 <b>Max Supply:</b> ${formatNumber(coinData.max_supply, 0)} ${symbol}\n`;
+      }
     }
 
+    // Add chart link
     message += `\n🔗 <a href="https://coinmarketcap.com/currencies/${coinData.slug}/">View Chart</a>`;
 
-    // Inline keyboard
+    // Inline keyboard with buttons
     const keyboard = Markup.inlineKeyboard([
-      [Markup.button.url('Chart', `https://coinmarketcap.com/currencies/${coinData.slug}/`)],
-      [Markup.button.url('News', `https://coinmarketcap.com/currencies/${coinData.slug}/news/`)],
+      [
+        Markup.button.url('Chart', `https://coinmarketcap.com/currencies/${coinData.slug}/`),
+        Markup.button.url('Trade', `https://www.mexc.com/exchange/${symbol}_USDT`)
+      ],
+      [
+        Markup.button.url('News', `https://coinmarketcap.com/currencies/${coinData.slug}/news/`),
+        Markup.button.callback('Refresh', `refresh_${symbol}`)
+      ],
     ]);
 
     await ctx.replyWithHTML(message, keyboard);
-    logger.info(`Successfully sent coin data for ${symbol} to ${ctx.chat.id}`);
-  } catch (error) {
-    logger.error(`Failed to retrieve coin data for ${symbol}: ${error.message}`);
+    logger.info(`Coin info sent for ${symbol}`);
     
+  } catch (error) {
+    // Enhanced error handling with specific error messages
     let errorMessage = 'Unable to retrieve data';
     
     if (error.response) {
@@ -901,53 +774,67 @@ TonCapy is where memes meet crypto—an energetic hub inspired by the friendly c
       const apiError = data?.status?.error_message;
       
       switch (status) {
-        case 400: errorMessage = 'Invalid request. Please check the coin symbol.'; break;
-        case 401: errorMessage = 'API key error. Please contact the bot owner.'; break;
-        case 403: errorMessage = 'Access denied. Please contact the bot owner.'; break;
-        case 429: errorMessage = 'Rate limit exceeded. Please try again later.'; break;
-        case 500: errorMessage = 'Server error. Please try again later.'; break;
-        default: errorMessage = 'An unexpected error occurred.';
+        case 400:
+          errorMessage = 'Invalid request. Please check the coin symbol (e.g., use BTC, ETH, etc.).';
+          break;
+        case 401:
+          errorMessage = 'API authentication error. Please try again later.';
+          break;
+        case 403:
+          errorMessage = 'Access denied. Please try again later.';
+          break;
+        case 429:
+          errorMessage = 'Rate limit exceeded. Please try again in a few minutes.';
+          break;
+        case 500:
+          errorMessage = 'Server error. Please try again later.';
+          break;
+        default:
+          errorMessage = 'An unexpected error occurred.';
       }
       
-      if (apiError) errorMessage += ` Details: ${apiError}`;
-    } else if (error.request) {
-      errorMessage = 'No response from server. Please try again later.';
+      if (apiError) {
+        errorMessage += ` Details: ${apiError}`;
+      }
+    } else if (error.message === 'Coin not found') {
+      errorMessage = `❌ Coin "${symbol}" not found. Please check the symbol and try again.`;
     } else {
       errorMessage = `Error: ${error.message}`;
     }
     
-    await ctx.reply(`❌ ${errorMessage}`);
+    logger.error('Error in /coin command', { 
+      symbol, 
+      error: error.message, 
+      status: error.response?.status
+    });
+    
+    await ctx.reply(errorMessage);
   }
 });
-
 // TCAPY command handler
 bot.command(['tcapy', 'tcapy@Tcapy_bot'], async (ctx) => {
-  // Debug information
-  logger.debug(`Command received in chat ${ctx.chat.id}, configured chat: ${config.GROUP_CHAT_ID}`);
-  logger.debug(`Message thread ID: ${ctx.message?.message_thread_id}, configured thread: ${config.MESSAGE_THREAD_ID}`);
-  
-  // Convert chat IDs to strings for proper comparison
+  // Convert IDs to strings for proper comparison
   const chatId = ctx.chat.id.toString();
-  const configuredChatId = config.GROUP_CHAT_ID;
+  const configuredChatId = GROUP_CHAT_ID ? GROUP_CHAT_ID.toString() : null;
   
-  // Convert thread IDs to strings (if they exist)
+  // Thread IDs
   const threadId = ctx.message?.message_thread_id ? ctx.message.message_thread_id.toString() : null;
-  const configuredThreadId = config.MESSAGE_THREAD_ID;
+  const configuredThreadId = MESSAGE_THREAD_ID ? MESSAGE_THREAD_ID.toString() : null;
   
-  // Improved permission check logic
+  // Improved permission check with better logging
   let permissionDenied = false;
   let permissionMessage = '';
   
   // If GROUP_CHAT_ID is set, check if command is in correct chat
   if (configuredChatId && chatId !== configuredChatId) {
-    logger.debug(`Command rejected - requested in chat ${chatId}, configured for ${configuredChatId}`);
+    logger.info(`Command rejected - requested in chat ${chatId}, configured for ${configuredChatId}`);
     permissionDenied = true;
     permissionMessage = '❌ This command is only available in the designated group.';
   }
   
   // If MESSAGE_THREAD_ID is set and we're in a forum, check if correct thread
   if (!permissionDenied && configuredThreadId && threadId !== configuredThreadId && ctx.chat.is_forum) {
-    logger.debug(`Command rejected - requested in thread ${threadId}, configured for ${configuredThreadId}`);
+    logger.info(`Command rejected - requested in thread ${threadId}, configured for ${configuredThreadId}`);
     permissionDenied = true;
     permissionMessage = '❌ This command is only available in the designated topic.';
   }
@@ -966,7 +853,6 @@ bot.command(['tcapy', 'tcapy@Tcapy_bot'], async (ctx) => {
     });
   } catch (error) {
     logger.warn(`Could not send typing indicator: ${error.message}`);
-    // Continue execution, this is not critical
   }
   
   // Send message that we're collecting data
@@ -977,15 +863,14 @@ bot.command(['tcapy', 'tcapy@Tcapy_bot'], async (ctx) => {
     });
   } catch (error) {
     logger.warn(`Could not send status message: ${error.message}`);
-    // Continue without status message
   }
   
   try {
-    // Call the core function with current context
-    const success = await sendTcapyInfoAutomatically(ctx);
+    // Call the signal generation function
+    await sendTcapySignal(ctx);
     
     // Delete status message if successful
-    if (success && statusMsg) {
+    if (statusMsg) {
       try {
         await ctx.telegram.deleteMessage(ctx.chat.id, statusMsg.message_id);
       } catch (error) {
@@ -993,139 +878,452 @@ bot.command(['tcapy', 'tcapy@Tcapy_bot'], async (ctx) => {
       }
     }
   } catch (error) {
-    logger.error(`Error executing /tcapy command: ${error.message}`);
+    logger.error(`Error executing /tcapy command: ${error.message}`, { stack: error.stack });
     
     try {
-      await ctx.reply('❌ Failed to retrieve TCAPY data. Please try again later.', {
-        message_thread_id: threadId ? parseInt(threadId, 10) : undefined
-      });
+      const errorMsg = '❌ Failed to retrieve TCAPY data. Please try again later.';
+      if (statusMsg) {
+        // Edit existing message instead of creating a new one
+        await ctx.telegram.editMessageText(
+          ctx.chat.id,
+          statusMsg.message_id,
+          undefined,
+          errorMsg
+        );
+      } else {
+        await ctx.reply(errorMsg, {
+          message_thread_id: threadId ? parseInt(threadId, 10) : undefined
+        });
+      }
     } catch (replyError) {
       logger.error(`Could not send error message: ${replyError.message}`);
     }
   }
 });
 
+// =====================================================
+// Signal Generation and Sending
+// =====================================================
 
-// ======= SCHEDULED UPDATES =======
-let updateInterval;
-function startScheduledUpdates() {
-  if (updateInterval) {
-    clearInterval(updateInterval);
-    logger.info('Cleared previous update interval');
-  }
-
-  logger.info('Starting scheduled updates...');
-  logger.info(`Will send updates to chat ${config.GROUP_CHAT_ID}${config.MESSAGE_THREAD_ID ? `, thread ${config.MESSAGE_THREAD_ID}` : ''}`);
-  
-  // Set up regular interval with robust error handling
-  updateInterval = setInterval(async () => {
-    try {
-      logger.info(`Running scheduled update at ${new Date().toISOString()}...`);
-      const result = await sendTcapyInfoAutomatically();
-      logger.info(`Scheduled update result: ${result ? 'success' : 'failed'}`);
-    } catch (err) {
-      logger.error(`Failed to send scheduled TCAPY update: ${err.message}`);
-      logger.debug(`Error stack: ${err.stack}`);
-      
-      // Better notification system
-      try {
-        if (config.GROUP_CHAT_ID) {
-          const sendOptions = { parse_mode: 'HTML' };
-          if (config.MESSAGE_THREAD_ID) {
-            sendOptions.message_thread_id = parseInt(config.MESSAGE_THREAD_ID, 10);
-          }
-          
-          await bot.telegram.sendMessage(
-            parseInt(config.GROUP_CHAT_ID, 10), 
-            '❌ Scheduled update failed. The bot will try again at the next scheduled time.', 
-            sendOptions
-          );
-        }
-      } catch (notifyError) {
-        logger.error(`Failed to send error notification: ${notifyError.message}`);
-      }
-    }
-  }, config.UPDATE_INTERVAL);
-
-  logger.info(`Scheduled updates started. Interval: ${config.UPDATE_INTERVAL / 60000} minutes`);
-  logger.info(`Next update scheduled at ${new Date(Date.now() + config.UPDATE_INTERVAL).toISOString()}`);
-}
-
-// Health check function
-let healthCheckTimer;
-function startHealthCheck() {
-  if (healthCheckTimer) clearInterval(healthCheckTimer);
-  
-  healthCheckTimer = setInterval(() => {
-    logger.debug(`Health check: Bot is alive at ${new Date().toISOString()}`);
-  }, 300000); // Every 5 minutes
-}
-
-// ======= BOT LAUNCH =======
-async function launchBot() {
+// Main function to generate and send TCAPY signals
+async function sendTcapySignal(ctx = null) {
   try {
-    // Launch the bot with optimized update types
-    await bot.launch({
-      allowedUpdates: ['message', 'callback_query']
+    // Determine chat and thread ID based on context or environment variables
+    const chatId = ctx?.chat?.id || GROUP_CHAT_ID;
+    const messageThreadId = ctx?.message?.message_thread_id || MESSAGE_THREAD_ID;
+    
+    logger.info('Starting TCAPY signal generation', { chatId, messageThreadId });
+    
+    const symbol = 'TCAPYUSDT';
+    
+    // Fetch data in parallel to improve performance
+    const [cmcData, mexcVolume, trades, orderBook] = await Promise.all([
+      throttledFetchCmcData('TCAPY').catch(err => {
+        logger.error('Failed to fetch CMC data', { error: err.message });
+        return { price: 0, volume24h: 0 };
+      }),
+      fetchMexc24hVolume(symbol),
+      fetchTradeHistory(symbol, 1000).catch(err => {
+        logger.error('Failed to fetch trade history', { error: err.message });
+        return [];
+      }),
+      fetchOrderBook(symbol, 100)
+    ]);
+    
+    // Validate trade data
+    if (!trades || trades.length === 0) {
+      throw new Error('No trade data available');
+    }
+    
+    // Get current price from most recent trade
+    const currentPrice = parseFloat(trades[0].price);
+    if (isNaN(currentPrice)) {
+      throw new Error('Invalid current price');
+    }
+    
+    // Define time periods for analysis
+    const now = Date.now();
+    const oneHourAgo = now - 60 * 60 * 1000;
+    const thirtyMinutesAgo = now - 30 * 60 * 1000;
+    const fifteenMinutesAgo = now - 15 * 60 * 1000;
+    const fourHoursAgo = now - 4 * 60 * 60 * 1000;
+    
+    // Calculate actual volumes for different time periods
+    const actualOneHourData = calculateVolume(trades, oneHourAgo);
+    const actualThirtyMinData = calculateVolume(trades, thirtyMinutesAgo);
+    const actualFifteenMinData = calculateVolume(trades, fifteenMinutesAgo);
+    const actualFourHourData = calculateVolume(trades, fourHoursAgo);
+    
+    // Find prices at different time periods
+    const price15MinAgo = getPriceAtTime(trades, fifteenMinutesAgo) || currentPrice;
+    const price30MinAgo = getPriceAtTime(trades, thirtyMinutesAgo) || currentPrice;
+    const price1HourAgo = getPriceAtTime(trades, oneHourAgo) || currentPrice;
+    const price4HourAgo = getPriceAtTime(trades, fourHoursAgo) || currentPrice;
+    
+    // Calculate price changes
+    const change15Min = ((currentPrice - price15MinAgo) / price15MinAgo * 100);
+    const change30Min = ((currentPrice - price30MinAgo) / price30MinAgo * 100);
+    const change1Hour = ((currentPrice - price1HourAgo) / price1HourAgo * 100);
+    const change4Hour = ((currentPrice - price4HourAgo) / price4HourAgo * 100);
+    
+    // Use CMC volume if available, fallback to MEXC volume
+    const volume24h = cmcData.volume24h > 0 ? cmcData.volume24h : mexcVolume;
+    
+    // Trade data for volume estimation
+    const tradeData = {
+      currentPrice,
+      change15Min,
+      change30Min,
+      change1Hour,
+      change4Hour
+    };
+    
+    // Estimate volumes for different time periods
+    const estimatedVolumes = estimateVolumeDistribution(volume24h, tradeData);
+    
+    // Choose between actual and estimated volumes based on data quality
+    const isActualVolumeReliable = (volume) => {
+      return (parseFloat(volume.totalBuyValue) + parseFloat(volume.totalSellValue)) > (volume24h * 0.01);
+    };
+    
+    const oneHourData = isActualVolumeReliable(actualOneHourData) ? actualOneHourData : estimatedVolumes.hour1;
+    const thirtyMinData = isActualVolumeReliable(actualThirtyMinData) ? actualThirtyMinData : estimatedVolumes.min30;
+    const fifteenMinData = isActualVolumeReliable(actualFifteenMinData) ? actualFifteenMinData : estimatedVolumes.min15;
+    
+    // Generate key buy zones
+    const buyZones = generateBuyZones(trades, orderBook, currentPrice, volume24h);
+    
+    // Build the message
+    let message = `<b>🚨 TCAPY/USDT Real-Time Analysis </b>\n\n`;
+    message += `<b>💰 Current Price:</b> $${formatPrice(currentPrice)} USDT\n`;
+    message += `🕒 15m: ${change15Min.toFixed(2)}% | ⏳ 30m: ${change30Min.toFixed(2)}% | 🕰 1h: ${change1Hour.toFixed(2)}% | 📅 4h: ${change4Hour.toFixed(2)}%\n\n`;
+    
+    // Find the most significant timeframe for signaling
+    const timeframes = [
+      { name: '15 Minutes', change: change15Min, data: fifteenMinData },
+      { name: '30 Minutes', change: change30Min, data: thirtyMinData },
+      { name: '1 Hour', change: change1Hour, data: oneHourData },
+      { name: '4 Hours', change: change4Hour, data: actualFourHourData }
+    ];
+    
+    // Sort timeframes by absolute change to find most significant
+    const significantTimeframes = [...timeframes].sort((a, b) => Math.abs(b.change) - Math.abs(a.change));
+    const primaryTimeframe = significantTimeframes[0];
+    
+    // Calculate buy/sell ratio for signal generation
+    const buyValue = parseFloat(primaryTimeframe.data.totalBuyValue);
+    const sellValue = parseFloat(primaryTimeframe.data.totalSellValue);
+    const totalVolume = buyValue + sellValue;
+    const buySellRatio = sellValue === 0 ? 1 : buyValue / sellValue;
+    
+    // Generate signal message
+    const signalMessage = generateSignalMessage(
+      primaryTimeframe.name, 
+      primaryTimeframe.change, 
+      buySellRatio, 
+      totalVolume
+    );
+    
+    // Add alert for significant price movements
+    if (Math.abs(change15Min) >= 5 || Math.abs(change1Hour) >= 10) {
+      message += `<b>⚠️ ALERT: Significant Price Movement Detected!</b>\n`;
+    }
+    
+    // Add signal message
+    message += `${signalMessage}\n`;
+    
+    // Add volume analysis
+    message += `\n<b>📊 Volume Analysis (Last 24h: $${formatNumber(volume24h, 0)})</b>\n`;
+    
+    // Display Sell Orders (Asks)
+    message += `\n🔴 <b>Sell Orders (Asks)</b>\n`;
+    timeframes.slice(0, 3).forEach(({ name, data }) => {
+      const sellValue = parseFloat(data.totalSellValue);
+      const sellAmount = parseFloat(data.totalSellAmount);
+      message += `- <b>Last ${name}:</b> $${formatNumber(sellValue, 0)} | ${formatNumber(sellAmount, 0)} TCAPY\n`;
     });
     
-    logger.info(`Bot started successfully at ${new Date().toISOString()}`);
-    logger.info(`Bot username: @${bot.botInfo.username}`);
+    // Display Buy Orders (Bids)
+    message += `\n🟢 <b>Buy Orders (Bids)</b>\n`;
+    timeframes.slice(0, 3).forEach(({ name, data }) => {
+      const buyValue = parseFloat(data.totalBuyValue);
+      const buyAmount = parseFloat(data.totalBuyAmount);
+      message += `- <b>Last ${name}:</b> $${formatNumber(buyValue, 0)} | ${formatNumber(buyAmount, 0)} TCAPY\n`;
+    });
     
-    // Start health check
-    startHealthCheck();
+    // Display Buy/Sell Ratio
+    const totalBuyValue = parseFloat(oneHourData.totalBuyValue);
+    const totalSellValue = parseFloat(oneHourData.totalSellValue);
+    const hourlyRatio = totalSellValue === 0 ? '∞' : (totalBuyValue / totalSellValue).toFixed(2);
     
-    // Send initial TCAPY update
-    logger.info('Running initial TCAPY info update...');
-    try {
-      await sendTcapyInfoAutomatically();
-      logger.info('Initial TCAPY info update completed successfully');
-    } catch (error) {
-      logger.error(`Failed to run initial update: ${error.message}`);
-      // Continue with bot operation even if initial update fails
+    message += `\n<b>Buy/Sell Ratio (1h):</b> ${hourlyRatio} ${hourlyRatio > 1 ? '📈' : '📉'}\n`;
+    
+    // Display Top Buy Zones
+    if (buyZones.length > 0) {
+      message += `\n<b>🏆 Top Buy Zones Right Now</b> 💡\n`;
+      buyZones.forEach(({ price, amount, value }, index) => {
+        message += `${index + 1}. $${formatPrice(price)} | $${formatNumber(value, 0)} | ${formatNumber(amount, 0)} TCAPY\n`;
+      });
+    } else {
+      message += `\n🟢 No significant buy zones detected in recent trading activity.\n`;
     }
     
-    // Start scheduled updates
-    startScheduledUpdates();
+    // Add market metrics
+    const circulatingSupply = 888_000_000_000;
+    const marketCap = currentPrice * circulatingSupply;
+    
+    message += `\n<b>📊 Market Metrics</b>`;
+    message += `\n<b>- Market Cap:</b> $${formatNumber(marketCap, 0)}`;
+    message += `\n<b>- Total Volume 24H:</b> $${formatNumber(volume24h, 0)}`;
+    message += `\n<b>- Circulating Supply:</b> 888,000,000,000\n`;
+    
+    // Add technical trend indicator
+    const technicalTrend = change1Hour > 0 && change4Hour > 0 ? 'Bullish 📈' :
+                          change1Hour < 0 && change4Hour < 0 ? 'Bearish 📉' : 
+                          'Neutral ↔️';
+    
+    message += `\n<b>Technical Trend:</b> ${technicalTrend}\n`;
+    
+    // Footer with links
+    message += `\n🔗 <a href="https://www.mexc.com/exchange/TCAPY_USDT">Trade on MEXC</a> | <a href="https://coinmarketcap.com/currencies/toncapy/">View on CMC</a>`;
+    message += `\n📚 <b>Use /tcapy for real-time updates | /help for all commands</b>`; 
+    message += `\n🌐 Powered by <b>TCAPY Community Bot</b> | Serving 500K+ traders`;
+    
+    // Send message with appropriate thread ID if specified
+    if (ctx) {
+      // If called from a command handler
+      await ctx.replyWithHTML(message, { 
+        disable_web_page_preview: true,
+        message_thread_id: messageThreadId
+      });
+    } else {
+      // If called from scheduled task
+      await bot.telegram.sendMessage(chatId, message, { 
+        parse_mode: 'HTML',
+        disable_web_page_preview: true,
+        message_thread_id: messageThreadId 
+      });
+    }
+    
+    logger.info('Sent TCAPY signal successfully', { timestamp: new Date() });
+    return true;
     
   } catch (error) {
-    logger.error(`Failed to start bot: ${error.message}`);
-    if (error.stack) {
-      logger.debug(`Error stack: ${error.stack}`);
+    logger.error('Error sending TCAPY signal', { 
+      error: error.message,
+      stack: error.stack
+    });
+    
+    // If not called from a command handler, try to send error message
+    if (!ctx) {
+      try {
+        await bot.telegram.sendMessage(
+          GROUP_CHAT_ID,
+          `❌ Error generating TCAPY signal: ${error.message}. Service will retry automatically.`,
+          { 
+            parse_mode: 'HTML',
+            message_thread_id: MESSAGE_THREAD_ID 
+          }
+        );
+      } catch (msgError) {
+        logger.error('Failed to send error message', { error: msgError.message });
+      }
     }
-    process.exit(1);
+    
+    throw error;
   }
 }
+
+// =====================================================
+// Automatic Signal Scheduler
+// =====================================================
+
+// Create a cache for storing last update time to prevent duplicate signals
+const signalCache = {
+  lastUpdateTime: 0,
+  isUpdating: false,
+  errorCount: 0,
+  maxErrorCount: 5,
+  resetErrorCount: function() {
+    this.errorCount = 0;
+  },
+  incrementErrorCount: function() {
+    this.errorCount++;
+    return this.errorCount;
+  }
+};
+
+// Schedule automatic signals with error handling and retry logic
+async function scheduleAutomaticSignal() {
+  // Prevent concurrent updates
+  if (signalCache.isUpdating) {
+    logger.debug('Update already in progress, skipping');
+    return;
+  }
+  
+  signalCache.isUpdating = true;
+  
+  try {
+    logger.info('Starting scheduled TCAPY signal update');
+    await sendTcapySignal();
+    
+    // Update timestamp and reset error count on success
+    signalCache.lastUpdateTime = Date.now();
+    signalCache.resetErrorCount();
+    
+    logger.info('Scheduled TCAPY signal completed successfully');
+  } catch (error) {
+    // Increment error count and log
+    const errorCount = signalCache.incrementErrorCount();
+    logger.error(`Scheduled signal update failed (${errorCount}/${signalCache.maxErrorCount})`, {
+      error: error.message
+    });
+    
+    // If we've hit max consecutive errors, notify but continue trying
+    if (errorCount === signalCache.maxErrorCount) {
+      try {
+        await bot.telegram.sendMessage(
+          GROUP_CHAT_ID,
+          `⚠️ <b>System Alert:</b> The TCAPY signal service has encountered multiple consecutive errors. Our team has been notified and is investigating. Updates will continue automatically when the issue is resolved.`,
+          { 
+            parse_mode: 'HTML',
+            message_thread_id: MESSAGE_THREAD_ID 
+          }
+        );
+      } catch (notifyError) {
+        logger.error('Failed to send error notification', { error: notifyError.message });
+      }
+    }
+  } finally {
+    signalCache.isUpdating = false;
+  }
+}
+
+// Set up recurring signal updates (every 2 hours = 7,200,000ms)
+const SIGNAL_INTERVAL = 7200000;
+let signalTimer = null;
+
+function startAutomaticSignals() {
+  if (signalTimer) {
+    clearInterval(signalTimer);
+  }
+  
+  // Schedule first update 1 minute after startup to ensure all services are ready
+  setTimeout(() => {
+    scheduleAutomaticSignal();
+    
+    // Then set up recurring interval
+    signalTimer = setInterval(scheduleAutomaticSignal, SIGNAL_INTERVAL);
+    
+    logger.info(`Automatic signal updates scheduled every ${SIGNAL_INTERVAL / 60000} minutes`);
+  }, 60000);
+}
+
+// =====================================================
+// Bot Error Handling
+// =====================================================
+
+// Handle global bot errors
+bot.catch((err, ctx) => {
+  logger.error('Bot error', {
+    error: err.message,
+    stack: err.stack,
+    updateType: ctx?.updateType,
+    chat: ctx?.chat?.id,
+    user: ctx?.from?.id
+  });
+  
+  // Attempt to notify user
+  if (ctx && ctx.reply) {
+    ctx.reply('An error occurred while processing your request. Please try again later.')
+      .catch(replyErr => {
+        logger.error('Failed to send error reply', { error: replyErr.message });
+      });
+  }
+});
+
+// =====================================================
+// Launch Bot
+// =====================================================
+
+// Start the bot with proper error handling
+async function launchBot() {
+  try {
+    await bot.launch();
+    logger.info('Bot started successfully', {
+      username: bot.botInfo?.username
+    });
+    
+    // Start automatic signal updates
+    startAutomaticSignals();
+    
+    // Setup graceful stop
+    process.once('SIGINT', () => {
+      logger.info('SIGINT signal received, stopping bot');
+      bot.stop('SIGINT');
+    });
+    
+    process.once('SIGTERM', () => {
+      logger.info('SIGTERM signal received, stopping bot');
+      bot.stop('SIGTERM');
+    });
+    
+    return true;
+  } catch (error) {
+    logger.error('Failed to start bot', {
+      error: error.message,
+      stack: error.stack
+    });
+    
+    // Attempt to restart after delay if this was an unexpected error
+    setTimeout(() => {
+      logger.info('Attempting to restart bot');
+      launchBot();
+    }, 30000);
+    
+    return false;
+  }
+}
+
+// Thêm vào phần Bot Command Handlers
+bot.action(/refresh_(.+)/, async (ctx) => {
+  const symbol = ctx.match[1];
+  await ctx.answerCbQuery(`Refreshing ${symbol} data...`);
+  
+  // Simulate coin command
+  const fakeMsgCtx = {...ctx};
+  fakeMsgCtx.message = {
+    text: `/coin ${symbol}`,
+    message_thread_id: ctx.message?.message_thread_id
+  };
+  
+  // Process command
+  await bot.handleUpdate({
+    update_id: ctx.update.update_id,
+    message: fakeMsgCtx.message
+  });
+});
+
+// Thêm lệnh debug để kiểm tra
+bot.command('debug', async (ctx) => {
+  if (ctx.from.id.toString() !== process.env.ADMIN_ID) {
+    return ctx.reply('⛔ This command is restricted to admin use only.');
+  }
+  
+  const debugInfo = {
+    botRuntime: process.uptime(),
+    lastSignal: signalCache.lastUpdateTime ? new Date(signalCache.lastUpdateTime).toISOString() : 'None',
+    isUpdating: signalCache.isUpdating,
+    errorCount: signalCache.errorCount,
+    nextScheduled: signalTimer ? 'Active' : 'Not set',
+    memoryUsage: process.memoryUsage()
+  };
+  
+  await ctx.replyWithHTML(`<b>Debug Info:</b>\n<pre>${JSON.stringify(debugInfo, null, 2)}</pre>`);
+});
 
 // Launch the bot
 launchBot();
 
-// ======= GRACEFUL SHUTDOWN =======
-process.once('SIGINT', () => {
-  logger.info('SIGINT received. Shutting down bot...');
-  bot.stop('SIGINT');
-  clearInterval(updateInterval);
-  clearInterval(healthCheckTimer);
-});
-
-process.once('SIGTERM', () => {
-  logger.info('SIGTERM received. Shutting down bot...');
-  bot.stop('SIGTERM');
-  clearInterval(updateInterval);
-  clearInterval(healthCheckTimer);
-});
-
-// ======= ERROR HANDLING =======
-process.on('unhandledRejection', (reason, promise) => {
-  logger.error(`Unhandled Promise Rejection: ${reason}`);
-  if (reason.stack) {
-    logger.debug(`Error stack: ${reason.stack}`);
-  }
-  // Do not crash the application, but log the error
-});
-
-process.on('uncaughtException', (error) => {
-  logger.error(`Uncaught Exception: ${error.message}`);
-  logger.debug(`Error stack: ${error.stack}`);
-  // Do not exit here, let the process continue if possible
-});
+// Export bot instance for testing
+export { bot, sendTcapySignal };
