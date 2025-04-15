@@ -1153,7 +1153,11 @@ const signalCache = {
   }
 };
 
-// Schedule automatic signals with error handling and retry logic
+// Định nghĩa khoảng thời gian kiểm tra (15 phút = 900,000ms)
+const CHECK_INTERVAL = 900000;
+let signalTimer = null;
+
+// Schedule automatic signals with improved error handling
 async function scheduleAutomaticSignal() {
   // Prevent concurrent updates
   if (signalCache.isUpdating) {
@@ -1198,24 +1202,54 @@ async function scheduleAutomaticSignal() {
     signalCache.isUpdating = false;
   }
 }
-
-// Set up recurring signal updates (every 2 hours = 7,200,000ms)
+// Function to check if we need to send a signal based on time
+function shouldSendSignal() {
+  const now = Date.now();
+  const timeSinceLastUpdate = now - signalCache.lastUpdateTime;
+  
+  // Nếu chưa có cập nhật trước đó hoặc đã hơn 2 giờ (7200000ms)
+  if (signalCache.lastUpdateTime === 0 || timeSinceLastUpdate >= 7200000) {
+    logger.info(`Time to send signal: Last update was ${timeSinceLastUpdate / 1000 / 60} minutes ago`);
+    return true;
+  }
+  
+  logger.debug(`Not time to send signal yet: ${Math.round((7200000 - timeSinceLastUpdate) / 1000 / 60)} minutes remaining`);
+  return false;
+}
 const SIGNAL_INTERVAL = 7200000;
-let signalTimer = null;
 
+// Setup signal timer with improved error handling
 function startAutomaticSignals() {
   if (signalTimer) {
     clearInterval(signalTimer);
+    logger.info('Previous signal timer cleared');
   }
   
-  // Schedule first update 1 minute after startup to ensure all services are ready
-  setTimeout(() => {
-    scheduleAutomaticSignal();
+  // First signal 1 minute after startup
+  logger.info('Scheduling first signal in 1 minute');
+  setTimeout(async () => {
+    try {
+      logger.info('Sending initial signal');
+      await scheduleAutomaticSignal();
+      logger.info('Initial signal completed');
+    } catch (error) {
+      logger.error('Error sending initial signal', { error: error.message });
+    }
     
-    // Then set up recurring interval
-    signalTimer = setInterval(scheduleAutomaticSignal, SIGNAL_INTERVAL);
+    // Setup recurring checks every 15 minutes
+    logger.info(`Setting up signal checks every ${CHECK_INTERVAL / 60000} minutes`);
+    signalTimer = setInterval(async () => {
+      try {
+        logger.info('Running periodic signal check');
+        if (shouldSendSignal()) {
+          await scheduleAutomaticSignal();
+        }
+      } catch (checkError) {
+        logger.error('Error during signal check', { error: checkError.message });
+      }
+    }, CHECK_INTERVAL);
     
-    logger.info(`Automatic signal updates scheduled every ${SIGNAL_INTERVAL / 60000} minutes`);
+    logger.info('Automatic signal schedule initialized successfully');
   }, 60000);
 }
 
@@ -1247,6 +1281,7 @@ bot.catch((err, ctx) => {
 // =====================================================
 
 // Start the bot with proper error handling
+// Start the bot with proper error handling
 async function launchBot() {
   try {
     await bot.launch();
@@ -1254,8 +1289,10 @@ async function launchBot() {
       username: bot.botInfo?.username
     });
     
-    // Start automatic signal updates
+    // CRITICAL: Make sure this line is executed
+    logger.info('Initializing automatic signal updates');
     startAutomaticSignals();
+    logger.info('Signal updates initialized');
     
     // Setup graceful stop
     process.once('SIGINT', () => {
