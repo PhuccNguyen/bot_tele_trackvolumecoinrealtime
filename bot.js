@@ -1208,15 +1208,15 @@ function shouldSendSignal() {
   const timeSinceLastUpdate = now - signalCache.lastUpdateTime;
   
   // Nếu chưa có cập nhật trước đó hoặc đã hơn 2 giờ (7200000ms)
-  if (signalCache.lastUpdateTime === 0 || timeSinceLastUpdate >= 7200000) {
+  if (signalCache.lastUpdateTime === 0 || timeSinceLastUpdate >= SIGNAL_INTERVAL) {
     logger.info(`Time to send signal: Last update was ${timeSinceLastUpdate / 1000 / 60} minutes ago`);
     return true;
   }
   
-  logger.debug(`Not time to send signal yet: ${Math.round((7200000 - timeSinceLastUpdate) / 1000 / 60)} minutes remaining`);
+  logger.debug(`Not time to send signal yet: ${Math.round((SIGNAL_INTERVAL - timeSinceLastUpdate) / 1000 / 60)} minutes remaining`);
   return false;
 }
-const SIGNAL_INTERVAL = 7200000;
+const SIGNAL_INTERVAL = 14400000; // 4 hours in milliseconds
 
 // Setup signal timer with improved error handling
 function startAutomaticSignals() {
