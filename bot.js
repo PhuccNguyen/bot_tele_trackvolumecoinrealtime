@@ -1007,7 +1007,7 @@ async function sendTcapySignal(ctx = null) {
     ];
     
     // Sort timeframes by absolute change to find most significant
-    const significantTimeframes = [...timeframes].sort((a, b) => Math.abs(b.change) - Math.abs(a.change));
+    const significantTimeframes = [...timeframes].sort((a, b) => b.change - a.change);
     const primaryTimeframe = significantTimeframes[0];
     
     // Calculate buy/sell ratio for signal generation
@@ -1153,105 +1153,6 @@ const signalCache = {
   }
 };
 
-// Định nghĩa khoảng thời gian kiểm tra (15 phút = 900,000ms)
-const CHECK_INTERVAL = 900000;
-let signalTimer = null;
-
-// Schedule automatic signals with improved error handling
-async function scheduleAutomaticSignal() {
-  // Prevent concurrent updates
-  if (signalCache.isUpdating) {
-    logger.debug('Update already in progress, skipping');
-    return;
-  }
-  
-  signalCache.isUpdating = true;
-  
-  try {
-    logger.info('Starting scheduled TCAPY signal update');
-    await sendTcapySignal();
-    
-    // Update timestamp and reset error count on success
-    signalCache.lastUpdateTime = Date.now();
-    signalCache.resetErrorCount();
-    
-    logger.info('Scheduled TCAPY signal completed successfully');
-  } catch (error) {
-    // Increment error count and log
-    const errorCount = signalCache.incrementErrorCount();
-    logger.error(`Scheduled signal update failed (${errorCount}/${signalCache.maxErrorCount})`, {
-      error: error.message
-    });
-    
-    // If we've hit max consecutive errors, notify but continue trying
-    if (errorCount === signalCache.maxErrorCount) {
-      try {
-        await bot.telegram.sendMessage(
-          GROUP_CHAT_ID,
-          `⚠️ <b>System Alert:</b> The TCAPY signal service has encountered multiple consecutive errors. Our team has been notified and is investigating. Updates will continue automatically when the issue is resolved.`,
-          { 
-            parse_mode: 'HTML',
-            message_thread_id: MESSAGE_THREAD_ID 
-          }
-        );
-      } catch (notifyError) {
-        logger.error('Failed to send error notification', { error: notifyError.message });
-      }
-    }
-  } finally {
-    signalCache.isUpdating = false;
-  }
-}
-// Function to check if we need to send a signal based on time
-function shouldSendSignal() {
-  const now = Date.now();
-  const timeSinceLastUpdate = now - signalCache.lastUpdateTime;
-  
-  // Nếu chưa có cập nhật trước đó hoặc đã hơn 2 giờ (7200000ms)
-  if (signalCache.lastUpdateTime === 0 || timeSinceLastUpdate >= SIGNAL_INTERVAL) {
-    logger.info(`Time to send signal: Last update was ${timeSinceLastUpdate / 1000 / 60} minutes ago`);
-    return true;
-  }
-  
-  logger.debug(`Not time to send signal yet: ${Math.round((SIGNAL_INTERVAL - timeSinceLastUpdate) / 1000 / 60)} minutes remaining`);
-  return false;
-}
-const SIGNAL_INTERVAL = 14400000; // 4 hours in milliseconds
-
-// Setup signal timer with improved error handling
-function startAutomaticSignals() {
-  if (signalTimer) {
-    clearInterval(signalTimer);
-    logger.info('Previous signal timer cleared');
-  }
-  
-  // First signal 1 minute after startup
-  logger.info('Scheduling first signal in 1 minute');
-  setTimeout(async () => {
-    try {
-      logger.info('Sending initial signal');
-      await scheduleAutomaticSignal();
-      logger.info('Initial signal completed');
-    } catch (error) {
-      logger.error('Error sending initial signal', { error: error.message });
-    }
-    
-    // Setup recurring checks every 15 minutes
-    logger.info(`Setting up signal checks every ${CHECK_INTERVAL / 60000} minutes`);
-    signalTimer = setInterval(async () => {
-      try {
-        logger.info('Running periodic signal check');
-        if (shouldSendSignal()) {
-          await scheduleAutomaticSignal();
-        }
-      } catch (checkError) {
-        logger.error('Error during signal check', { error: checkError.message });
-      }
-    }, CHECK_INTERVAL);
-    
-    logger.info('Automatic signal schedule initialized successfully');
-  }, 60000);
-}
 
 // =====================================================
 // Bot Error Handling
@@ -1280,47 +1181,129 @@ bot.catch((err, ctx) => {
 // Launch Bot
 // =====================================================
 
-// Start the bot with proper error handling
-// Start the bot with proper error handling
+
+// Khởi tạo bot và thiết lập lịch gửi tự động
+async function initializeBot() {
+  logger.info('Bot starting...');
+  
+  // Validate environment variables
+  if (!GROUP_CHAT_ID) {
+    logger.warn('GROUP_CHAT_ID not set - automatic messages will not be sent');
+    return; // Không tiếp tục nếu không có GROUP_CHAT_ID
+  }
+  
+  // Gửi tin nhắn ngay khi khởi động (sau 10 giây để đảm bảo bot đã sẵn sàng)
+  logger.info('Scheduling initial TCAPY signal in 10 seconds');
+  setTimeout(async () => {
+    try {
+      logger.info('Sending initial TCAPY signal');
+      await sendTcapySignal();
+      logger.info('Initial TCAPY signal sent successfully');
+      signalCache.lastUpdateTime = Date.now();
+    } catch (error) {
+      logger.error(`Failed to send initial TCAPY signal: ${error.message}`, { stack: error.stack });
+    }
+  }, 10000);
+  
+  // Thiết lập gửi tin nhắn tự động mỗi 4 giờ
+  logger.info('Setting up automated TCAPY signal every 4 hours');
+  setInterval(async () => {
+    try {
+      // Kiểm tra xem có đang trong quá trình cập nhật không
+      if (signalCache.isUpdating) {
+        logger.info('Update already in progress, skipping this interval');
+        return;
+      }
+      
+      // Đánh dấu đang cập nhật
+      signalCache.isUpdating = true;
+      
+      logger.info('Sending scheduled TCAPY signal');
+      await sendTcapySignal();
+      
+      // Cập nhật thời gian gửi tin nhắn cuối cùng
+      signalCache.lastUpdateTime = Date.now();
+      signalCache.isUpdating = false;
+      signalCache.resetErrorCount();
+      
+      logger.info('Scheduled TCAPY signal sent successfully');
+    } catch (error) {
+      signalCache.isUpdating = false;
+      
+      const errorCount = signalCache.incrementErrorCount();
+      logger.error(`Failed to send scheduled TCAPY signal (attempt ${errorCount}): ${error.message}`, { stack: error.stack });
+      
+      // Nếu lỗi quá nhiều lần liên tiếp, gửi thông báo đến admin
+      if (errorCount >= signalCache.maxErrorCount && process.env.ADMIN_ID) {
+        try {
+          await bot.telegram.sendMessage(
+            process.env.ADMIN_ID,
+            `⚠️ Alert: TCAPY scheduled signal failed ${errorCount} times in a row. Latest error: ${error.message}`
+          );
+        } catch (notifyError) {
+          logger.error(`Failed to notify admin: ${notifyError.message}`);
+        }
+      }
+    }
+  }, 14400000); // 4 giờ = 14400000ms
+  
+  logger.info('Automatic TCAPY signal schedule setup complete');
+}
+
+
 async function launchBot() {
   try {
+    // Ensure the bot is not already running
+    if (bot.botInfo) {
+      logger.info('Bot is already running.');
+      return true;
+    }
+    
+    // Launch the bot
     await bot.launch();
-    logger.info('Bot started successfully', {
-      username: bot.botInfo?.username
-    });
+    logger.info('Bot started successfully', { username: bot.botInfo?.username });
     
-    // CRITICAL: Make sure this line is executed
-    logger.info('Initializing automatic signal updates');
-    startAutomaticSignals();
-    logger.info('Signal updates initialized');
+    // Set up automatic tasks after bot is launched
+    await initializeBot();
     
-    // Setup graceful stop
+    // Handle graceful shutdowns for SIGINT and SIGTERM
     process.once('SIGINT', () => {
-      logger.info('SIGINT signal received, stopping bot');
+      logger.info('SIGINT received, shutting down bot gracefully');
       bot.stop('SIGINT');
     });
-    
+
     process.once('SIGTERM', () => {
-      logger.info('SIGTERM signal received, stopping bot');
+      logger.info('SIGTERM received, shutting down bot gracefully');
       bot.stop('SIGTERM');
     });
     
     return true;
   } catch (error) {
-    logger.error('Failed to start bot', {
-      error: error.message,
-      stack: error.stack
-    });
-    
-    // Attempt to restart after delay if this was an unexpected error
-    setTimeout(() => {
-      logger.info('Attempting to restart bot');
-      launchBot();
-    }, 30000);
+    logger.error('Failed to start bot', { error: error.message, stack: error.stack });
+
+    // Check if the error is related to a conflict (i.e., another bot instance is running)
+    if (error.message.includes('409: Conflict')) {
+      logger.info('Bot instance conflict detected. Retrying in 30 seconds...');
+    } else {
+      // For any other errors, try restarting the bot
+      logger.info('Will attempt to restart in 30 seconds');
+    }
+
+    // Retry the launch after a delay
+    setTimeout(() => launchBot(), 30000);
     
     return false;
   }
 }
+
+
+// Khởi động bot
+launchBot().catch(error => {
+  logger.error(`Critical error launching bot: ${error.message}`, { stack: error.stack });
+  process.exit(1);
+});
+
+
 
 // Thêm vào phần Bot Command Handlers
 bot.action(/refresh_(.+)/, async (ctx) => {
@@ -1341,26 +1324,25 @@ bot.action(/refresh_(.+)/, async (ctx) => {
   });
 });
 
-// Thêm lệnh debug để kiểm tra
+
+
 bot.command('debug', async (ctx) => {
   if (ctx.from.id.toString() !== process.env.ADMIN_ID) {
     return ctx.reply('⛔ This command is restricted to admin use only.');
   }
-  
   const debugInfo = {
     botRuntime: process.uptime(),
     lastSignal: signalCache.lastUpdateTime ? new Date(signalCache.lastUpdateTime).toISOString() : 'None',
     isUpdating: signalCache.isUpdating,
     errorCount: signalCache.errorCount,
-    nextScheduled: signalTimer ? 'Active' : 'Not set',
     memoryUsage: process.memoryUsage()
   };
-  
   await ctx.replyWithHTML(`<b>Debug Info:</b>\n<pre>${JSON.stringify(debugInfo, null, 2)}</pre>`);
 });
 
 // Launch the bot
 launchBot();
+
 
 // Export bot instance for testing
 export { bot, sendTcapySignal };
