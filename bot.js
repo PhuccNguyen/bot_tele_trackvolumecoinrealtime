@@ -573,12 +573,12 @@ function generateBuyZones(trades, orderBook, currentPrice, volume24h) {
 // Signal Generation Functions
 // =====================================================
 
-// Generate signal message based on price changes and volume
 function generateSignalMessage(timeframe, change, buySellRatio, totalVolume) {
-  // Enhanced signal quality with more detailed analysis
   let signalMessage = '';
-  
-  // Handle extreme price movements
+  const isShortTerm = timeframe === '15 Minutes' || timeframe === '30 Minutes';
+  const isLongTerm = timeframe === '1 Hour' || timeframe === '4 Hours';
+
+  // Phân tích biến động giá
   if (change >= 20) {
     signalMessage = `🌋 EXTREME SURGE in ${timeframe}: TCAPY showing parabolic movement with massive buy pressure – FOMO phase detected!`;
   } else if (change >= 15) {
@@ -613,7 +613,7 @@ function generateSignalMessage(timeframe, change, buySellRatio, totalVolume) {
     signalMessage = `🌀 MAJOR CORRECTION in ${timeframe}: Sharp selloff – potential oversold opportunity for brave traders.`;
   }
 
-  // Add volume analysis
+  // Phân tích khối lượng và tâm lý thị trường
   if (buySellRatio > 2 && totalVolume > 1000) {
     signalMessage += ` 📈 EXTREMELY HIGH buy pressure detected with heavy accumulation!`;
   } else if (buySellRatio > 1.5 && totalVolume > 1000) {
@@ -626,6 +626,22 @@ function generateSignalMessage(timeframe, change, buySellRatio, totalVolume) {
     signalMessage += ` 🔊 Extremely high trading activity with major market participation!`;
   } else if (totalVolume > 2000) {
     signalMessage += ` 🔊 High trading volume indicating strong market interest!`;
+  }
+
+  // Gợi ý hành động dựa trên khung thời gian
+  if (isShortTerm) {
+    signalMessage += ` ⚡ Short-term traders may consider quick entries or exits based on this signal.`;
+  } else if (isLongTerm) {
+    signalMessage += ` 🕰 Long-term investors should assess this signal in the context of their overall strategy.`;
+  }
+
+  // Nhận xét về tâm lý thị trường
+  if (change > 5 && buySellRatio > 1.5) {
+    signalMessage += ` 😃 Market sentiment appears strongly bullish – FOMO may drive prices higher.`;
+  } else if (change < -5 && buySellRatio < 0.5) {
+    signalMessage += ` 😟 Market sentiment is bearish – panic selling could lead to oversold conditions.`;
+  } else if (Math.abs(change) < 1 && totalVolume < 1000) {
+    signalMessage += ` 😐 Market sentiment is neutral with low activity – patience may be required.`;
   }
 
   return signalMessage;
@@ -687,129 +703,133 @@ bot.help((ctx) => {
 bot.command('coin', async (ctx) => {
   const symbol = ctx.message.text.split(/\s+/)[1]?.trim()?.toUpperCase();
   
-  if (!symbol) {
-    return ctx.reply('❌ Please provide a coin symbol (e.g., /coin BTC)');
+if (!symbol) {
+  return ctx.reply('❌ Please provide a coin symbol (e.g., /coin BTC)');
+}
+
+// Show typing status
+await ctx.telegram.sendChatAction(ctx.chat.id, 'typing', {
+  message_thread_id: ctx.message.message_thread_id
+}).catch(() => {});
+
+try {
+  // Fetch data from CoinMarketCap API
+  const coinData = await throttledFetchCmcData(symbol);
+  
+  if (!coinData) {
+    throw new Error('Coin not found');
   }
   
-  // Show typing status
-  await ctx.telegram.sendChatAction(ctx.chat.id, 'typing', {
-    message_thread_id: ctx.message.message_thread_id
-  }).catch(() => {});
+  // Special case for TCAPY with custom circulating supply
+  const circulatingSupply = symbol === 'TCAPY' ? 888_000_000_000 : coinData.circulating_supply;
+  const marketCap = coinData.price * circulatingSupply;
   
-  try {
-    // Fetch data from CoinMarketCap API
-    const coinData = await throttledFetchCmcData(symbol);
-    
-    if (!coinData) {
-      throw new Error('Coin not found');
-    }
-    
-    // Special case for TCAPY with custom circulating supply
-    const circulatingSupply = symbol === 'TCAPY' ? 888_000_000_000 : coinData.circulating_supply;
-    const marketCap = coinData.price * circulatingSupply;
-    
-    // Construct the response message
-    let message = `
+  // Construct the response message
+  let message = `
 📈 <b>${coinData.name} (${symbol})</b>
 💰 <b>Current Price:</b> $${formatPrice(coinData.price)}
 📊 <b>24h Change:</b> ${formatNumber(coinData.percent_change_24h, 2)}%
 📊 <b>1h Change:</b> ${formatNumber(coinData.percent_change_1h, 2)}%
 🔄 <b>24h Volume:</b> $${formatNumber(coinData.volume24h, 0)}
 🔄 <b>Market Cap:</b> $${formatNumber(marketCap, 0)}
-    `;
+  `;
     
-    // Add supply information
-    if (symbol === 'TCAPY') {
-      message += `🔢 <b>Total Supply:</b> 888,000,000,000 TCAPY\n`;
-      
-      // Special message for TCAPY
-      message += `
+   // Add supply information
+if (symbol === 'TCAPY') {
+  message += `🔢 <b>Total Supply:</b> 888,000,000,000 TCAPY\n`;
+  
+  // Special message for TCAPY with improved formatting
+  message += `
 🌟 <b>Welcome to TonCapy!</b>
 TonCapy is where memes meet crypto—an energetic hub inspired by the friendly capybara. With the TCapy token at its heart, our platform empowers Telegram projects to effortlessly create, manage, and grow vibrant communities.
 
-<b>Why TonCapy?</b>
-🤝 Community Building: Seamlessly connect with like-minded users.
-⚡ Real-Time Interaction: Enjoy dynamic notifications & interactive content.
-🚀 Token Ecosystem: Fuel community growth with TCapy.
+📌 <b>Why TonCapy?</b>
+🤝 <i>Community Building:</i> Seamlessly connect with like-minded users.
+⚡ <i>Real-Time Interaction:</i> Enjoy dynamic notifications & interactive content.
+🚀 <i>Token Ecosystem:</i> Fuel community growth with TCapy.
 
-<b>Impressive Achievements:</b>
+🏆 <b>Impressive Achievements:</b>
 • 1.5M Spins • 14.3B Total TCapy
 • 300K Daily Active Users • 4M Monthly Active Users
 • 5.5M Total Holders • 4.2M Users in 1 Month!
-      `;
-    } else {
-      // For other coins, show regular supply info
-      if (coinData.circulating_supply) {
-        message += `🔢 <b>Circulating Supply:</b> ${formatNumber(coinData.circulating_supply, 0)} ${symbol}\n`;
-      }
-      if (coinData.max_supply) {
-        message += `🔢 <b>Max Supply:</b> ${formatNumber(coinData.max_supply, 0)} ${symbol}\n`;
-      }
-    }
-
-    // Add chart link
-    message += `\n🔗 <a href="https://coinmarketcap.com/currencies/${coinData.slug}/">View Chart</a>`;
-
-    // Inline keyboard with buttons
-    const keyboard = Markup.inlineKeyboard([
-      [
-        Markup.button.url('Chart', `https://coinmarketcap.com/currencies/${coinData.slug}/`),
-        Markup.button.url('Trade', `https://www.mexc.com/exchange/${symbol}_USDT`)
-      ],
-      [
-        Markup.button.url('News', `https://coinmarketcap.com/currencies/${coinData.slug}/news/`),
-        Markup.button.callback('Refresh', `refresh_${symbol}`)
-      ],
-    ]);
-
-    await ctx.replyWithHTML(message, keyboard);
-    logger.info(`Coin info sent for ${symbol}`);
-    
-  } catch (error) {
-    // Enhanced error handling with specific error messages
-    let errorMessage = 'Unable to retrieve data';
-    
-    if (error.response) {
-      const { status, data } = error.response;
-      const apiError = data?.status?.error_message;
-      
-      switch (status) {
-        case 400:
-          errorMessage = 'Invalid request. Please check the coin symbol (e.g., use BTC, ETH, etc.).';
-          break;
-        case 401:
-          errorMessage = 'API authentication error. Please try again later.';
-          break;
-        case 403:
-          errorMessage = 'Access denied. Please try again later.';
-          break;
-        case 429:
-          errorMessage = 'Rate limit exceeded. Please try again in a few minutes.';
-          break;
-        case 500:
-          errorMessage = 'Server error. Please try again later.';
-          break;
-        default:
-          errorMessage = 'An unexpected error occurred.';
-      }
-      
-      if (apiError) {
-        errorMessage += ` Details: ${apiError}`;
-      }
-    } else if (error.message === 'Coin not found') {
-      errorMessage = `❌ Coin "${symbol}" not found. Please check the symbol and try again.`;
-    } else {
-      errorMessage = `Error: ${error.message}`;
-    }
-    
-    logger.error('Error in /coin command', { 
-      symbol, 
-      error: error.message, 
-      status: error.response?.status
-    });
-    
-    await ctx.reply(errorMessage);
+  `;
+} else {
+  // For other coins, show regular supply info with consistent formatting
+  if (coinData.circulating_supply) {
+    message += `🔢 <b>Circulating Supply:</b> ${formatNumber(coinData.circulating_supply, 0)} ${symbol}\n`;
   }
+  if (coinData.max_supply) {
+    message += `🔢 <b>Max Supply:</b> ${formatNumber(coinData.max_supply, 0)} ${symbol}\n`;
+  }
+  // Add a note if supply data is unavailable
+  if (!coinData.circulating_supply && !coinData.max_supply) {
+    message += `ℹ️ <i>Supply information is currently unavailable.</i>\n`;
+  }
+}
+
+// Add chart link with a clear call-to-action
+message += `\n🔗 <a href="https://coinmarketcap.com/currencies/${coinData.slug}/">View Price Chart</a>`;
+
+// Inline keyboard with buttons, using concise and professional labels
+const keyboard = Markup.inlineKeyboard([
+  [
+    Markup.button.url('📊 Chart', `https://coinmarketcap.com/currencies/${coinData.slug}/`),
+    Markup.button.url('💹 Trade', `https://www.mexc.com/exchange/${symbol}_USDT`)
+  ],
+  [
+    Markup.button.url('📰 News', `https://coinmarketcap.com/currencies/${coinData.slug}/news/`),
+    Markup.button.callback('🔄 Refresh', `refresh_${symbol}`)
+  ],
+]);
+
+await ctx.replyWithHTML(message, keyboard);
+logger.info(`Coin info sent for ${symbol}`);
+
+} catch (error) {
+  // Enhanced error handling with user-friendly messages
+  let errorMessage = '⚠️ Unable to retrieve data';
+
+  if (error.response) {
+    const { status, data } = error.response;
+    const apiError = data?.status?.error_message;
+
+    switch (status) {
+      case 400:
+        errorMessage = '⚠️ Invalid request. Please check the coin symbol (e.g., use BTC, ETH).';
+        break;
+      case 401:
+        errorMessage = '⚠️ API authentication error. Please try again later.';
+        break;
+      case 403:
+        errorMessage = '⚠️ Access denied. Please try again later.';
+        break;
+      case 429:
+        errorMessage = '⚠️ Rate limit exceeded. Please try again in a few minutes.';
+        break;
+      case 500:
+        errorMessage = '⚠️ Server error. Please try again later.';
+        break;
+      default:
+        errorMessage = '⚠️ An unexpected error occurred.';
+    }
+
+    if (apiError) {
+      errorMessage += ` Details: ${apiError}`;
+    }
+  } else if (error.message === 'Coin not found') {
+    errorMessage = `❌ Coin "${symbol}" not found. Please check the symbol and try again!`;
+  } else {
+    errorMessage = `⚠️ Error: ${error.message}`;
+  }
+
+  logger.error('Error in /coin command', {
+    symbol,
+    error: error.message,
+    status: error.response?.status
+  });
+
+  await ctx.reply(errorMessage);
+}
 });
 // TCAPY command handler
 bot.command(['tcapy', 'tcapy@Tcapy_bot'], async (ctx) => {
@@ -901,9 +921,6 @@ bot.command(['tcapy', 'tcapy@Tcapy_bot'], async (ctx) => {
   }
 });
 
-// =====================================================
-// Signal Generation and Sending
-// =====================================================
 
 // Main function to generate and send TCAPY signals
 async function sendTcapySignal(ctx = null) {
